@@ -28,7 +28,7 @@ import sys
 import time
 
 from config import (
-    BOT_LEVELS, BASE_URL, TEST_ACCOUNTS, LEVEL_COMPARISON,
+    BOT_LEVELS, BASE_URL, TEST_ACCOUNTS, LEVEL_COMPARISON, SCENARIOS,
     validate_url, validate_level, validate_runs, validate_show_id,
     mask_email, build_booking_options,
 )
@@ -112,7 +112,7 @@ def parse_level_arg(level_str: str) -> list[int]:
 async def run_macro(base_url: str, level: int, runs: int,
                     accounts: list, show_id: int, schedule_id: int,
                     applicant: dict, booking_options: dict,
-                    data_logger: DataLogger):
+                    data_logger: DataLogger, level_overrides: dict = None):
     """단일 레벨로 매크로 실행"""
     cfg = BOT_LEVELS[level]
 
@@ -122,14 +122,14 @@ async def run_macro(base_url: str, level: int, runs: int,
     print(f"  반복: {runs}회")
     print(f"{'#'*60}")
 
-    # 브라우저 한 번 열고 runs 동안 유지
-    macro = TruveMacro(base_url, level, data_logger, booking_options=booking_options)
-
     for run_idx in range(runs):
         account = accounts[run_idx % len(accounts)]
         print(f"\n  --- Run {run_idx + 1}/{runs} (계정: {mask_email(account['email'])}) ---")
 
-        is_last_run = (run_idx == runs - 1)
+        # 매 run마다 새 매크로 인스턴스 (깨끗한 상태)
+        macro = TruveMacro(base_url, level, data_logger,
+                           booking_options=booking_options,
+                           level_overrides=level_overrides)
 
         try:
             be_record, fe_record = await macro.run(
@@ -137,7 +137,6 @@ async def run_macro(base_url: str, level: int, runs: int,
                 show_id=show_id,
                 schedule_id=schedule_id,
                 applicant=applicant,
-                keep_browser=not is_last_run,  # 마지막 run에서만 브라우저 닫기
             )
 
             data_logger.add_be_record(be_record)
@@ -202,19 +201,34 @@ async def async_main(args):
         print(f"  [INPUT ERROR] {e}")
         sys.exit(1)
 
+    # 시나리오 프리셋 적용
+    level_overrides = None
+    if args.scenario:
+        sc = SCENARIOS[args.scenario]
+        print(f"\n  [시나리오] {sc['name']}: {sc['description']}")
+        levels = sc["levels"]
+        if args.runs == 1:  # 사용자가 명시 안 했으면 프리셋 값 사용
+            runs = sc["runs_per_level"]
+        else:
+            runs = args.runs
+        level_overrides = sc.get("overrides")
+    else:
+        runs = args.runs
+
     total_start = time.time()
 
     for level in levels:
         await run_macro(
             base_url=args.url,
             level=level,
-            runs=args.runs,
+            runs=runs,
             accounts=accounts,
             show_id=args.show_id,
             schedule_id=args.schedule_id,
             applicant=applicant,
             booking_options=booking_options,
             data_logger=data_logger,
+            level_overrides=level_overrides,
         )
 
     total_elapsed = time.time() - total_start
@@ -244,6 +258,8 @@ def main():
   python main.py --info
         """,
     )
+    parser.add_argument("--scenario", default=None, choices=["bot", "stealth"],
+                        help="시나리오 프리셋 (bot=데이터수집, stealth=실전매크로)")
     parser.add_argument("--level", default="1", help="봇 레벨 (1~10, 'all', '1-5')")
     parser.add_argument("--runs", type=int, default=1, help="레벨당 반복 횟수 (1~100)")
     parser.add_argument("--url", default=BASE_URL, help="대상 URL")
@@ -324,6 +340,9 @@ def main():
         sys.exit(1)
 
     print(f"  대상: {args.url}")
+    if args.scenario:
+        sc = SCENARIOS[args.scenario]
+        print(f"  시나리오: {args.scenario} ({sc['name']})")
     print(f"  레벨: {args.level}")
     print(f"  반복: {args.runs}회/레벨")
     print(f"  공연: showId={args.show_id}")

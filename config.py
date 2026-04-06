@@ -688,6 +688,47 @@ def build_booking_options(
     }
 
 
+# ============================================================
+# 시나리오 프리셋
+# ============================================================
+
+SCENARIOS = {
+    "bot": {
+        "name": "봇 데이터 수집",
+        "description": "탐지 모델 학습용. 사람과 명확히 다른 봇 행동 생성",
+        "levels": [1, 2, 3],
+        "runs_per_level": 5,
+        "use_case": "BE/FE 모델 학습 데이터",
+    },
+    "stealth": {
+        "name": "실전 매크로 (스텔스)",
+        "description": "사람처럼 보이지만 핵심(대기열/좌석/결제)은 빠르게",
+        "levels": [7],
+        "runs_per_level": 1,
+        "use_case": "탐지 회피 테스트 / 실전 예매",
+        # stealth 전용 오버라이드: 핵심 구간만 빠르게
+        "overrides": {
+            "queue_poll_ms": (500, 1000),         # 대기열은 빠르게 폴링
+            "queue_ignore_server_interval": True,  # 서버 권장 무시
+            "seat_select_delay_ms": (100, 300),    # 좌석 선점은 즉시
+            "action_delay_ms": (300, 800),         # 일반 동작은 사람처럼
+            "typing_delay_ms": (40, 80),           # 타이핑은 적당히
+            "typing_use_paste": False,
+            "mouse_move_to_target": True,
+            "mouse_move_steps": 10,
+            "mouse_curve": "bezier",
+            "mouse_jitter_px": 3,
+            "click_offset_px": 5,
+            "hover_before_click_ms": (30, 150),
+            "hide_webdriver": True,
+            "retry_count": 3,
+            "seat_strategy": "first_available",    # 좌석은 빠르게 첫 좌석
+            "max_seat_attempts": 5,
+        },
+    },
+}
+
+
 FE_FEATURES = [
     "webdriver_detected",
     "plugins_count",

@@ -169,13 +169,16 @@ class TruveMacro:
     """
 
     def __init__(self, base_url: str, level: int, logger: DataLogger,
-                 booking_options: dict = None):
+                 booking_options: dict = None, level_overrides: dict = None):
         if not PLAYWRIGHT_AVAILABLE:
             raise RuntimeError("pip install playwright && playwright install chromium")
 
         self.base_url = base_url.rstrip("/")
         self.level = level
-        self.cfg = BOT_LEVELS[level]
+        # 레벨 설정 복사 후 오버라이드 적용 (stealth 시나리오용)
+        self.cfg = dict(BOT_LEVELS[level])
+        if level_overrides:
+            self.cfg.update(level_overrides)
         self.logger = logger
         self.run_id = str(uuid.uuid4())[:8]
         # 예매 부가 설정 (좌석 등급/구역/매수, 결제 방식, 회차 날짜/시간)
@@ -1585,11 +1588,10 @@ class TruveMacro:
     # ================================================================
 
     async def run(self, account: dict, show_id: int,
-                  schedule_id: int = None, applicant: dict = None,
-                  keep_browser: bool = False) -> tuple:
+                  schedule_id: int = None, applicant: dict = None) -> tuple:
         """
         전체 예매 플로우 실행.
-        keep_browser=True 이면 실행 후 브라우저를 닫지 않음 (재시도 시 창 유지).
+        매 run마다 새 브라우저를 열고 닫아서 깨끗한 상태 보장.
         """
         flow_start = time.time()
 
@@ -1615,14 +1617,8 @@ class TruveMacro:
         print(f"{'='*60}")
 
         try:
-            # 브라우저가 없거나 죽었으면 (재)시작
-            if not self.browser or not self.browser.is_connected():
-                await self.setup()
-            # 페이지가 닫혔으면 새 탭
-            elif not self.page or self.page.is_closed():
-                self.page = await self.context.new_page()
-                self.mouse = MouseController(self.page, self.cfg)
-                self.keyboard = KeyboardController(self.page, self.cfg)
+            # 매번 새 브라우저 (이전 run의 상태/쿠키 영향 제거)
+            await self.setup()
 
             # ── 실제 API 흐름 순서 ──
             # login → show/schedule → captcha → queue → session/seat → booking → payment → toss
@@ -1658,8 +1654,6 @@ class TruveMacro:
                 paste_count = sum(1 for k in self.keyboard.keystroke_log if k.get("type") == "paste")
                 self._fe.paste_event_count = paste_count
 
-            # keep_browser=True 면 브라우저 유지 (재시도 시 같은 창 사용)
-            if not keep_browser:
-                await self.teardown()
+            await self.teardown()
 
         return self._be, self._fe
