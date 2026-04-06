@@ -60,7 +60,31 @@ python main.py --email your@email.com --password yourpass
 
 ## 실행 예시
 
-### 기본 실행
+### 시나리오 프리셋 (권장)
+
+```bash
+# 봇 데이터 수집 (Lv1~3, 각 5회, 초고속 예매)
+python main.py --scenario bot
+
+# 실전 매크로 (사람처럼 보이되 대기열/좌석은 빠르게)
+python main.py --scenario stealth
+
+# 시나리오 + 옵션 조합
+python main.py --scenario bot --runs 10 --seat-grade VIP --pay-method VIRTUAL_ACCOUNT --bank 신한
+python main.py --scenario stealth --seat-count 4 --seat-section 1F-B
+```
+
+| | `bot` | `stealth` |
+|---|---|---|
+| 목적 | 탐지 모델 학습 데이터 | 실전 예매 / 탐지 회피 |
+| 레벨 | Lv.1, 2, 3 | Lv.7 |
+| 대기열 | 100ms 폴링 | 500ms 폴링 |
+| 좌석 | 즉시 첫 좌석 | 즉시 첫 좌석 |
+| 마우스 | 없음/직선 | 베지어 곡선 |
+| webdriver | 노출 | 은닉 |
+| 타이핑 | 붙여넣기/초고속 | 40~80ms |
+
+### 기본 실행 (레벨 직접 지정)
 
 ```bash
 # Level 1 봇으로 1회

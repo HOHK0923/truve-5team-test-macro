@@ -695,10 +695,18 @@ def build_booking_options(
 SCENARIOS = {
     "bot": {
         "name": "봇 데이터 수집",
-        "description": "탐지 모델 학습용. 사람과 명확히 다른 봇 행동 생성",
+        "description": "탐지 모델 학습용. 사람과 명확히 다른 봇 행동 + 빠른 예매",
         "levels": [1, 2, 3],
         "runs_per_level": 5,
         "use_case": "BE/FE 모델 학습 데이터",
+        "overrides": {
+            "queue_poll_ms": (100, 200),
+            "queue_ignore_server_interval": True,
+            "seat_select_delay_ms": (10, 50),
+            "seat_strategy": "first_available",
+            "max_seat_attempts": 10,
+            "retry_count": 10,
+        },
     },
     "stealth": {
         "name": "실전 매크로 (스텔스)",
