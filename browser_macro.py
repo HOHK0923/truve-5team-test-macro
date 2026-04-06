@@ -332,35 +332,47 @@ class TruveMacro:
 
     async def step1_login(self, email: str, password: str):
         """
-        로그인 페이지에서 이메일/비밀번호 입력 후 로그인
-        - input name="email", placeholder="techup@gmail.com"
-        - input name="password", placeholder="비밀번호 입력하기"
-        - button type="submit" text="로그인"
+        로그인 - 이미 로그인 상태면 스킵
+        상단 네비에 "로그인" 버튼이 보이면 → 미로그인 → 로그인 수행
+        "로그인" 버튼이 없으면 → 이미 로그인됨 → 스킵
         """
-        print(f"\n  [Step 1/8] 로그인")
+        print(f"\n  [Step 1/8] 로그인 확인")
         self._be.api_call_sequence.append("signin")
 
+        # 먼저 메인 페이지로 이동해서 로그인 상태 확인
+        await self.page.goto(f"{self.base_url}/", wait_until="networkidle")
+        await asyncio.sleep(1)
+
+        # 상단에 "로그인" 텍스트/버튼이 있는지 확인
+        login_btn = await self.page.query_selector(
+            'a:has-text("로그인"), button:has-text("로그인")'
+        )
+
+        if not login_btn:
+            # 로그인 버튼이 없음 = 이미 로그인 상태
+            print(f"      -> 이미 로그인 상태, 스킵")
+            self._be.login_method = "already_logged_in"
+            return
+
+        # 미로그인 → 로그인 수행
+        print(f"      미로그인 상태, 로그인 진행")
         await self.page.goto(f"{self.base_url}/signin", wait_until="networkidle")
         await self._delay()
 
-        # 이메일 입력 (화면에서 글자가 하나씩 타이핑됨)
         # [Rule 4] 이메일 마스킹 출력
         print(f"      이메일: {mask_email(email)}")
         await self.keyboard.type_text('input[name="email"]', email)
         await self._delay()
 
-        # 비밀번호 입력
         print(f"      비밀번호 입력 중...")
         await self.keyboard.type_text('input[name="password"]', password)
         await self._delay()
 
-        # 로그인 버튼 클릭
         await self._click_selector(
             'button[type="submit"]',
             "로그인 버튼"
         )
 
-        # 로그인 완료 대기
         await self.page.wait_for_load_state("networkidle")
         await asyncio.sleep(1)
         print(f"      -> 로그인 완료")
@@ -412,29 +424,15 @@ class TruveMacro:
             except Exception:
                 print(f"      [!] 날짜 선택 실패, 기본 유지")
         else:
-            # any: 예매 가능한 날짜 중 랜덤 선택
-            print(f"      날짜: any (가용 날짜 랜덤 선택)")
-            try:
-                avail_days = await self.page.query_selector_all(
-                    'button[name="day"]:not([disabled])'
-                )
-                if avail_days:
-                    pick = random.choice(avail_days)
-                    box = await pick.bounding_box()
-                    if box:
-                        await self.mouse.click_at(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
-                        await asyncio.sleep(0.5)
-                    picked_text = await pick.text_content()
-                    print(f"      -> {picked_text}일 선택")
-            except Exception:
-                print(f"      [!] 날짜 랜덤 선택 실패, 기본 유지")
+            # any: 공연이 있는 날짜를 찾아서 선택
+            print(f"      날짜: any (공연 있는 날짜 탐색)")
+            await self._select_available_date()
 
         await self._delay()
 
         # ── 회차 시간 선택 ──
         target_time = self.booking.get("schedule_time")
         if target_time and target_time.lower() != "any":
-            # 특정 시간 선택
             print(f"      회차 시간 선택: {target_time}")
             try:
                 time_btn = await self.page.query_selector(
@@ -447,29 +445,85 @@ class TruveMacro:
                         await self.mouse.click_at(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
                         await asyncio.sleep(0.5)
                 else:
-                    print(f"      [!] {target_time} 회차 못찾음, 첫 번째 선택")
+                    print(f"      [!] {target_time} 회차 못찾음, 가용 회차 탐색")
+                    await self._select_available_schedule()
             except Exception:
-                print(f"      [!] 회차 선택 실패, 기본 유지")
+                await self._select_available_schedule()
         else:
-            # any: 예매 가능한 회차 중 랜덤 선택
-            print(f"      회차: any (가용 회차 랜덤 선택)")
-            try:
-                schedule_btns = await self.page.query_selector_all(
-                    '[class*="schedule"] button:not([disabled]), '
-                    'button[class*="schedule"]:not([disabled])'
-                )
-                if schedule_btns:
-                    pick = random.choice(schedule_btns)
-                    box = await pick.bounding_box()
-                    if box:
-                        await self.mouse.click_at(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
-                        await asyncio.sleep(0.5)
-                    picked_text = await pick.text_content()
-                    print(f"      -> {picked_text} 회차 선택")
-            except Exception:
-                print(f"      [!] 회차 랜덤 선택 실패, 기본 유지")
+            # any: 가용 회차 탐색
+            print(f"      회차: any (가용 회차 탐색)")
+            await self._select_available_schedule()
 
-        print(f"      -> 공연 페이지 로딩 완료")
+        print(f"      -> 공연/회차 선택 완료")
+
+    async def _select_available_date(self):
+        """
+        공연이 있는 날짜를 찾아서 클릭.
+        캘린더에서 disabled 아닌 날짜를 하나씩 클릭해보고,
+        "선택하신 날짜에 공연이 없습니다" 메시지가 안 뜨는 날짜를 찾는다.
+        """
+        max_attempts = 15  # 최대 15개 날짜 시도
+
+        # 활성화된(disabled 아닌) 날짜 버튼 수집
+        avail_days = await self.page.query_selector_all(
+            'button[name="day"]:not([disabled])'
+        )
+        if not avail_days:
+            print(f"      [!] 클릭 가능한 날짜 없음")
+            return
+
+        # 랜덤 셔플 (봇 패턴 다양화)
+        indices = list(range(len(avail_days)))
+        random.shuffle(indices)
+
+        for attempt, idx in enumerate(indices[:max_attempts]):
+            day_btn = avail_days[idx]
+            box = await day_btn.bounding_box()
+            if not box:
+                continue
+
+            day_text = await day_btn.text_content()
+            await self.mouse.click_at(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
+            await asyncio.sleep(0.8)
+
+            # "공연이 없습니다" 메시지 확인
+            no_show = await self.page.query_selector('text=공연이 없습니다')
+            if not no_show:
+                # 공연 있는 날짜 찾음
+                print(f"      -> {day_text}일 선택 (공연 있음, {attempt+1}번째 시도)")
+                return
+
+        print(f"      [!] {max_attempts}개 날짜 시도했으나 가용 날짜 없음")
+
+    async def _select_available_schedule(self):
+        """
+        가용 회차(시간) 찾아서 클릭.
+        회차 버튼/리스트에서 클릭 가능한 것을 찾는다.
+        """
+        # 회차 버튼 후보 셀렉터 (다양한 구조 대응)
+        selectors = [
+            '[class*="schedule"] button:not([disabled])',
+            'button[class*="schedule"]:not([disabled])',
+            '[class*="time"] button:not([disabled])',
+            'button[class*="round"]:not([disabled])',
+            # 일반적인 회차 리스트 아이템
+            '[role="radio"]:not([disabled])',
+            '[role="option"]:not([disabled])',
+        ]
+
+        for sel in selectors:
+            btns = await self.page.query_selector_all(sel)
+            if btns:
+                pick = random.choice(btns)
+                box = await pick.bounding_box()
+                if box:
+                    await self.mouse.click_at(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
+                    await asyncio.sleep(0.5)
+                picked_text = await pick.text_content()
+                print(f"      -> '{picked_text.strip()}' 회차 선택")
+                return
+
+        print(f"      [!] 가용 회차를 찾을 수 없음")
 
     # ================================================================
     # Step 3: 예매하기 버튼 → 캡차
