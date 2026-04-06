@@ -220,8 +220,10 @@ class TruveMacro:
             args=args,
         )
 
+        # no_viewport=True → 브라우저 창 전체 크기 사용 (--start-maximized와 연동)
+        # viewport 설정이 있으면 창 크기와 무관하게 고정되므로, 전체화면 보장을 위해 no_viewport 사용
         ctx_opts = {
-            "viewport": {"width": vw, "height": vh},
+            "no_viewport": True,
             "locale": "ko-KR",
             "timezone_id": "Asia/Seoul",
         }
