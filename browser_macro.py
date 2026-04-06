@@ -1023,56 +1023,6 @@ class TruveMacro:
             await self._fill_form_field(f'input[name="{field_name}"]', value, label)
             await self._delay()
 
-    async def _fill_form_field(self, selector: str, value: str, label: str):
-        """
-        결제 폼 필드에 값 입력. inputMode="tel" 등 특수 필드 대응.
-        1차: keyboard type_text
-        2차: page.fill
-        3차: JS value + input/change 이벤트 강제 발생
-        """
-        try:
-            el = await self.page.wait_for_selector(selector, timeout=5000)
-
-            # 방법 1: 클릭 → 전체선택 → 키보드 타이핑
-            await el.click(force=True)
-            await asyncio.sleep(0.1)
-            await self.page.keyboard.press("Control+A")
-            await self.page.keyboard.press("Backspace")
-            await asyncio.sleep(0.1)
-
-            try:
-                await el.type(value, delay=30)
-                current = await el.input_value()
-                if current == value:
-                    return
-            except Exception:
-                pass
-
-            # 방법 2: fill
-            try:
-                await el.fill(value)
-                current = await el.input_value()
-                if current == value:
-                    return
-            except Exception:
-                pass
-
-            # 방법 3: JS 강제 설정 + React 이벤트
-            await self.page.evaluate(f"""(sel) => {{
-                const el = document.querySelector(sel);
-                if (!el) return;
-                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                    window.HTMLInputElement.prototype, 'value'
-                ).set;
-                nativeInputValueSetter.call(el, '{value}');
-                el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-            }}""", selector)
-            print(f"      -> {label} (JS 입력)")
-
-        except Exception as e:
-            print(f"      [!] {label} 입력 실패: {type(e).__name__}")
-
         # 사람 시뮬: 입력 후 스크롤
         if self.level >= 7:
             await self._scroll()
@@ -1450,6 +1400,56 @@ class TruveMacro:
 
         await asyncio.sleep(3)
         print(f"      -> 카드 결제 처리 완료")
+
+    async def _fill_form_field(self, selector: str, value: str, label: str):
+        """
+        결제 폼 필드에 값 입력. inputMode="tel" 등 특수 필드 대응.
+        1차: 클릭 → type
+        2차: fill
+        3차: JS nativeInputValueSetter + React 이벤트
+        """
+        try:
+            el = await self.page.wait_for_selector(selector, timeout=5000)
+
+            await el.click(force=True)
+            await asyncio.sleep(0.1)
+            await self.page.keyboard.press("Control+A")
+            await self.page.keyboard.press("Backspace")
+            await asyncio.sleep(0.1)
+
+            # 방법 1: type
+            try:
+                await el.type(value, delay=30)
+                current = await el.input_value()
+                if current == value:
+                    return
+            except Exception:
+                pass
+
+            # 방법 2: fill
+            try:
+                await el.fill(value)
+                current = await el.input_value()
+                if current == value:
+                    return
+            except Exception:
+                pass
+
+            # 방법 3: JS 강제
+            await self.page.evaluate(f"""(sel) => {{
+                const el = document.querySelector(sel);
+                if (!el) return;
+                const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value'
+                ).set;
+                setter.call(el, '{value}');
+                el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+            }}""", selector)
+            print(f"      -> {label} (JS 입력)")
+
+        except Exception as e:
+            print(f"      [!] {label} 입력 실패: {type(e).__name__}")
 
     async def _check_agreements_individually(self):
         """
