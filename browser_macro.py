@@ -1346,6 +1346,42 @@ class TruveMacro:
 
         print(f"      [무통장 입금]")
 
+        # ── 0. Toss iframe 내부 폼 구조 디버그 ──
+        try:
+            debug = await toss.evaluate("""() => {
+                const selects = [...document.querySelectorAll('select')];
+                const inputs = [...document.querySelectorAll('input')];
+                const buttons = [...document.querySelectorAll('button')];
+                const labels = [...document.querySelectorAll('label')];
+                return {
+                    selects: selects.map(s => ({
+                        name: s.name, id: s.id,
+                        options: [...s.options].map(o => o.text).slice(0, 5),
+                        visible: s.offsetParent !== null,
+                    })),
+                    inputs: inputs.map(i => ({
+                        type: i.type, name: i.name, placeholder: i.placeholder,
+                        inputmode: i.inputMode, visible: i.offsetParent !== null,
+                    })),
+                    buttons: buttons.map(b => ({
+                        text: b.textContent.trim().substring(0, 30),
+                        type: b.type, visible: b.offsetParent !== null,
+                    })),
+                    labels: labels.map(l => l.textContent.trim().substring(0, 30)),
+                    checkboxes: inputs.filter(i => i.type === 'checkbox').map(c => ({
+                        checked: c.checked, visible: c.offsetParent !== null,
+                        label: (c.closest('label') || c.parentElement)?.textContent?.trim().substring(0, 30),
+                    })),
+                };
+            }""")
+            print(f"      [DEBUG] selects: {debug.get('selects', [])}")
+            print(f"      [DEBUG] inputs: {debug.get('inputs', [])}")
+            print(f"      [DEBUG] checkboxes: {debug.get('checkboxes', [])}")
+            print(f"      [DEBUG] buttons: {[b['text'] for b in debug.get('buttons', []) if b.get('visible')]}")
+            print(f"      [DEBUG] labels: {debug.get('labels', [])[:10]}")
+        except Exception as e:
+            print(f"      [DEBUG] 폼 구조 분석 실패: {type(e).__name__}")
+
         # ── 1. 모든 select 드롭다운 처리 (은행 선택 등) ──
         print(f"      은행 선택: {bank}")
         await self._delay()
