@@ -1196,25 +1196,63 @@ class TruveMacro:
             print(f"      [!] pages: {[p.url[:50] for p in self.context.pages]}")
             return
 
-        # ── Toss iframe 내부 폼 로딩 대기 ──
-        # iframe은 감지됐지만 내부 콘텐츠(select/input)가 아직 로딩 안 됐을 수 있음
-        print(f"      [Toss] 폼 로딩 대기...")
-        for wait_i in range(15):  # 최대 15초
+        # ── Toss iframe 내부 폼 로딩 대기 + 중첩 iframe 탐색 ──
+        # Toss SDK는 iframe > iframe 중첩 구조일 수 있음
+        print(f"      [Toss] 폼 로딩 대기 (중첩 iframe 탐색 포함)...")
+
+        actual_toss = toss  # 실제 폼이 있는 프레임
+
+        for wait_i in range(15):
+            # 현재 프레임에서 폼 요소 확인
             try:
-                form_count = await toss.evaluate("""() => {
+                form_count = await actual_toss.evaluate("""() => {
                     const s = document.querySelectorAll('select');
                     const i = document.querySelectorAll('input');
-                    const b = document.querySelectorAll('button');
-                    return s.length + i.length + b.length;
+                    return s.length + i.length;
                 }""")
-                if form_count >= 2:  # select + input + button 최소 2개
+                if form_count >= 2:
                     print(f"      [Toss] 폼 로딩 완료 ({form_count}개 요소, {wait_i+1}초)")
+                    toss = actual_toss
                     break
             except Exception:
                 pass
+
+            # 중첩 iframe 탐색 (모든 frames 순회)
+            found_inner = False
+            try:
+                all_frames = self.page.frames
+                for frame in all_frames:
+                    url = frame.url
+                    if not url or url == "about:blank":
+                        continue
+                    try:
+                        fc = await frame.evaluate("""() => {
+                            const s = document.querySelectorAll('select');
+                            const i = document.querySelectorAll('input');
+                            return s.length + i.length;
+                        }""")
+                        if fc >= 2:
+                            print(f"      [Toss] 중첩 iframe 발견: {url[:60]}... (요소 {fc}개)")
+                            actual_toss = frame
+                            toss = frame
+                            found_inner = True
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            if found_inner:
+                break
+
             await asyncio.sleep(1)
+            if wait_i % 3 == 2:
+                print(f"      [Toss] 대기 중... ({wait_i+1}초, frames: {len(self.page.frames)}개)")
         else:
-            print(f"      [!] Toss 폼 15초 대기했으나 요소 부족")
+            print(f"      [!] Toss 폼 15초 대기, 요소 부족 (frames: {len(self.page.frames)}개)")
+            # 마지막 시도: 모든 프레임 URL 출력
+            for f in self.page.frames:
+                print(f"        frame: {f.url[:80]}")
 
         await asyncio.sleep(0.5)
 
