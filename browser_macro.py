@@ -1196,7 +1196,27 @@ class TruveMacro:
             print(f"      [!] pages: {[p.url[:50] for p in self.context.pages]}")
             return
 
-        await asyncio.sleep(1)
+        # ── Toss iframe 내부 폼 로딩 대기 ──
+        # iframe은 감지됐지만 내부 콘텐츠(select/input)가 아직 로딩 안 됐을 수 있음
+        print(f"      [Toss] 폼 로딩 대기...")
+        for wait_i in range(15):  # 최대 15초
+            try:
+                form_count = await toss.evaluate("""() => {
+                    const s = document.querySelectorAll('select');
+                    const i = document.querySelectorAll('input');
+                    const b = document.querySelectorAll('button');
+                    return s.length + i.length + b.length;
+                }""")
+                if form_count >= 2:  # select + input + button 최소 2개
+                    print(f"      [Toss] 폼 로딩 완료 ({form_count}개 요소, {wait_i+1}초)")
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+        else:
+            print(f"      [!] Toss 폼 15초 대기했으나 요소 부족")
+
+        await asyncio.sleep(0.5)
 
         if pay_method == "VIRTUAL_ACCOUNT":
             await self._toss_virtual_account(toss, applicant)
