@@ -1125,39 +1125,48 @@ class TruveMacro:
 
     async def _get_toss_frame(self):
         """
-        Toss SDK는 iframe 또는 새 창(팝업)으로 열림.
-        두 가지 모두 시도하여 Toss 결제 화면에 접근한다.
+        Toss SDK 감지 - 최대 10초 대기하며 반복 탐색.
+        iframe / 새 탭 / 리다이렉트 / 현재 페이지 내 렌더링 전부 대응.
         """
-        # 방법 1: iframe으로 열린 경우
-        for frame in self.page.frames:
-            url = frame.url
-            if "tosspayments" in url or "toss" in url or "brandpay" in url:
-                print(f"      [Toss] iframe 감지: {url[:60]}...")
-                return frame
+        for attempt in range(10):  # 1초 간격 10회 = 최대 10초
+            # 1. iframe
+            for frame in self.page.frames:
+                url = frame.url
+                if "tosspayments" in url or "toss.im" in url or "brandpay" in url or "payment-gateway" in url:
+                    print(f"      [Toss] iframe 감지: {url[:60]}...")
+                    return frame
 
-        # 방법 2: 새 팝업 창으로 열린 경우
-        pages = self.context.pages
-        for p in pages:
-            if p != self.page and ("toss" in p.url or "tosspayments" in p.url):
-                print(f"      [Toss] 팝업 창 감지: {p.url[:60]}...")
-                return p
+            # 2. 새 탭/팝업
+            for p in self.context.pages:
+                if p != self.page:
+                    url = p.url
+                    if "toss" in url or "payment" in url:
+                        print(f"      [Toss] 새 탭 감지: {url[:60]}...")
+                        return p
 
-        # 방법 3: 새 창이 열릴 때까지 잠시 대기
-        try:
-            new_page = await self.context.wait_for_event("page", timeout=5000)
-            if "toss" in new_page.url:
-                print(f"      [Toss] 새 창 감지: {new_page.url[:60]}...")
-                return new_page
-        except Exception:
-            pass
+            # 3. 현재 페이지가 Toss로 리다이렉트됨
+            if "toss" in self.page.url or "payment-gateway" in self.page.url:
+                print(f"      [Toss] 리다이렉트 감지: {self.page.url[:60]}...")
+                return self.page
 
-        # 방법 4: 현재 페이지에서 Toss UI가 직접 렌더링된 경우
-        toss_el = await self.page.query_selector(
-            '[class*="toss"], [id*="toss"], [data-testid*="toss"]'
-        )
-        if toss_el:
-            print(f"      [Toss] 현재 페이지 내 Toss 엘리먼트 감지")
-            return self.page
+            # 4. 현재 페이지 내 Toss 요소
+            toss_el = await self.page.query_selector(
+                'iframe[src*="toss"], iframe[src*="payment"], [class*="toss"], [id*="toss"]'
+            )
+            if toss_el:
+                tag = await toss_el.evaluate("el => el.tagName.toLowerCase()")
+                if tag == "iframe":
+                    frame = await toss_el.content_frame()
+                    if frame:
+                        print(f"      [Toss] iframe 요소 감지")
+                        return frame
+                print(f"      [Toss] 현재 페이지 내 감지")
+                return self.page
+
+            if attempt < 9:
+                await asyncio.sleep(1)
+                if attempt % 3 == 2:
+                    print(f"      [Toss] 대기 중... ({attempt+1}초)")
 
         return None
 
@@ -1181,8 +1190,10 @@ class TruveMacro:
 
         toss = await self._get_toss_frame()
         if not toss:
-            print(f"      [!] Toss SDK 화면을 찾을 수 없음 (iframe/팝업/직접 렌더링 없음)")
-            print(f"      [!] 결제 화면이 열리지 않았거나 리다이렉트 방식일 수 있음")
+            print(f"      [!] Toss SDK 10초 대기했으나 감지 실패")
+            print(f"      [!] 현재 URL: {self.page.url}")
+            print(f"      [!] frames: {[f.url[:50] for f in self.page.frames]}")
+            print(f"      [!] pages: {[p.url[:50] for p in self.context.pages]}")
             return
 
         await asyncio.sleep(1)
