@@ -1010,26 +1010,68 @@ class TruveMacro:
         # ── 1. 예약자 정보 입력 ──
         print(f"      [예약자 정보]")
 
-        # 이름
-        print(f"      이름: {applicant['name']}")
-        await self.keyboard.type_text('input[name="name"]', applicant["name"])
-        await self._delay()
+        fields = [
+            ("name", applicant["name"], "이름"),
+            ("birth", applicant["birth"], "생년월일"),
+            ("email", applicant["email"], "이메일"),
+            ("phone", applicant["phone"], "전화번호"),
+        ]
 
-        # 생년월일 (8자리)
-        print(f"      생년월일: {applicant['birth']}")
-        await self.keyboard.type_text('input[name="birth"]', applicant["birth"])
-        await self._delay()
+        for field_name, value, label in fields:
+            display = mask_email(value) if field_name == "email" else value
+            print(f"      {label}: {display}")
+            await self._fill_form_field(f'input[name="{field_name}"]', value, label)
+            await self._delay()
 
-        # 이메일
-        # [Rule 4] 이메일 마스킹 출력
-        print(f"      이메일: {mask_email(applicant['email'])}")
-        await self.keyboard.type_text('input[name="email"]', applicant["email"])
-        await self._delay()
+    async def _fill_form_field(self, selector: str, value: str, label: str):
+        """
+        결제 폼 필드에 값 입력. inputMode="tel" 등 특수 필드 대응.
+        1차: keyboard type_text
+        2차: page.fill
+        3차: JS value + input/change 이벤트 강제 발생
+        """
+        try:
+            el = await self.page.wait_for_selector(selector, timeout=5000)
 
-        # 전화번호 (11자리, - 제외)
-        print(f"      전화번호: {applicant['phone']}")
-        await self.keyboard.type_text('input[name="phone"]', applicant["phone"])
-        await self._delay()
+            # 방법 1: 클릭 → 전체선택 → 키보드 타이핑
+            await el.click(force=True)
+            await asyncio.sleep(0.1)
+            await self.page.keyboard.press("Control+A")
+            await self.page.keyboard.press("Backspace")
+            await asyncio.sleep(0.1)
+
+            try:
+                await el.type(value, delay=30)
+                current = await el.input_value()
+                if current == value:
+                    return
+            except Exception:
+                pass
+
+            # 방법 2: fill
+            try:
+                await el.fill(value)
+                current = await el.input_value()
+                if current == value:
+                    return
+            except Exception:
+                pass
+
+            # 방법 3: JS 강제 설정 + React 이벤트
+            await self.page.evaluate(f"""(sel) => {{
+                const el = document.querySelector(sel);
+                if (!el) return;
+                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value'
+                ).set;
+                nativeInputValueSetter.call(el, '{value}');
+                el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+            }}""", selector)
+            print(f"      -> {label} (JS 입력)")
+
+        except Exception as e:
+            print(f"      [!] {label} 입력 실패: {type(e).__name__}")
 
         # 사람 시뮬: 입력 후 스크롤
         if self.level >= 7:
