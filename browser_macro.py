@@ -772,14 +772,9 @@ class TruveMacro:
 
     async def step5_select_seats(self, show_id: int):
         """
-        좌석 선택 - PixiJS Canvas 기반
-        - Canvas 배경: bg-[#EDEEF4]
-        - 좌석 색상: VIP=purple, R=purple, S=blue, A=green
-        - 선택시: 0xf11322 (빨강)
-        - 패널: "선택 좌석 N / 4", "결제하기" 버튼
-
-        PixiJS Canvas는 DOM 요소가 아니므로 Canvas 좌표로 클릭해야 함.
-        좌석 정보는 API 응답에서 가져와서 Canvas 위의 좌표를 계산.
+        좌석 선택 - DOM 기반 (PixiJS Canvas도 폴백 지원)
+        스크린샷 확인: 좌석은 일반 DOM 요소 (원형 div/button)
+        색상: VIP=보라, R=녹, S=파랑, A=노랑 / 선택시=빨강 / 예매됨=회색
         """
         print(f"\n  [Step 5/8] 좌석 선점")
         self._be.api_call_sequence.append("seat_select")
@@ -793,165 +788,123 @@ class TruveMacro:
             )
 
         await self.page.wait_for_load_state("networkidle")
-        await asyncio.sleep(2)  # PixiJS 렌더링 대기
+        await asyncio.sleep(2)
 
         seat_view_start = time.time()
 
-        # 좌석 선택 전 고민 시간 (레벨별)
         d_min, d_max = self.cfg["seat_select_delay_ms"]
         think_time = random.uniform(d_min, d_max)
         print(f"      좌석 고르는 중... ({think_time/1000:.1f}초)")
+        await asyncio.sleep(think_time / 1000.0)
 
-        # 사람 시뮬: 좌석 배치도 구경
-        if self.level >= 6:
-            await self._scroll()
-            await asyncio.sleep(think_time / 2000.0)
-        else:
-            await asyncio.sleep(think_time / 1000.0)
+        max_seats = self.booking.get("seat_count", 2)
+        target_grade = self.booking.get("seat_grade", "any").lower()
 
-        # PixiJS Canvas 찾기
+        # ── DOM에서 좌석 요소 찾기 (JS로 available 좌석 수집) ──
+        available_count = await self.page.evaluate("""(targetGrade) => {
+            // PixiJS Canvas 존재 여부 확인
+            if (document.querySelector('canvas')) return -1;  // Canvas면 -1
+
+            // DOM 좌석: 클릭 가능한 원형 요소 찾기
+            // available 좌석 = 회색(reserved)이 아닌 색상이 있는 좌석
+            const allEls = document.querySelectorAll(
+                'circle, [class*="seat"], [data-seat], [data-status]'
+            );
+            return allEls.length;
+        }""", target_grade)
+
+        if available_count == -1:
+            # Canvas 기반 → Canvas 좌표 클릭
+            print(f"      PixiJS Canvas 감지 → Canvas 좌표 클릭")
+            return await self._select_seats_canvas(max_seats)
+
+        # ── DOM 기반 좌석 선택 ──
+        selected = await self.page.evaluate(f"""(maxSeats) => {{
+            // 좌석 후보 셀렉터 (여러 패턴 시도)
+            const seatSelectors = [
+                'circle[fill]:not([fill="#aaaaaa"]):not([fill="#f1f1f4"]):not([fill="rgb(170, 170, 170)"])',
+                '[data-status="available"]',
+                '[class*="seat"]:not([class*="reserved"]):not([class*="unavailable"]):not([class*="sold"])',
+                'g[cursor="pointer"]',
+                'circle[cursor="pointer"]',
+            ];
+
+            let seats = [];
+            for (const sel of seatSelectors) {{
+                const found = document.querySelectorAll(sel);
+                if (found.length > 0) {{
+                    seats = [...found];
+                    break;
+                }}
+            }}
+
+            if (seats.length === 0) {{
+                // 최종 폴백: 모든 circle/rect 중 색상이 있는 것
+                const allCircles = document.querySelectorAll('circle, rect');
+                seats = [...allCircles].filter(el => {{
+                    const fill = el.getAttribute('fill') || '';
+                    // 회색/비활성 제외
+                    return fill && !fill.includes('aaa') && !fill.includes('f1f1')
+                           && fill !== 'none' && fill !== '#ffffff';
+                }});
+            }}
+
+            // 클릭
+            const clicked = [];
+            const toClick = Math.min(maxSeats, seats.length);
+            for (let i = 0; i < toClick; i++) {{
+                seats[i].dispatchEvent(new MouseEvent('click', {{bubbles: true}}));
+                clicked.push(i);
+            }}
+            return clicked.length;
+        }}""", max_seats)
+
+        if selected > 0:
+            self._be.seat_hold_attempts = selected
+            self._be.seat_view_to_hold_ms = (time.time() - seat_view_start) * 1000
+            self._be.selected_seat_ids = list(range(selected))
+            print(f"      -> 좌석 {selected}석 선택 완료 (DOM)")
+            return True
+
+        # 폴백: 직접 클릭 시도
+        print(f"      JS 선택 실패, 직접 클릭 시도")
+        return await self._select_seats_canvas(max_seats)
+
+    async def _select_seats_canvas(self, max_seats: int):
+        """Canvas 또는 DOM 폴백: 좌석 영역에서 좌표 클릭"""
+        # 페이지에서 좌석 영역 찾기
         canvas = await self.page.query_selector('canvas')
-        if not canvas:
-            print(f"      [!] Canvas 요소를 찾을 수 없음")
-            # 대체: DOM 기반 좌석 시도
-            return await self._select_seats_dom()
+        if canvas:
+            box = await canvas.bounding_box()
+        else:
+            # 전체 페이지 콘텐츠 영역
+            box = await self.page.evaluate("""() => {
+                const main = document.querySelector('main') || document.body;
+                const r = main.getBoundingClientRect();
+                return {x: r.x, y: r.y, width: r.width, height: r.height};
+            }""")
 
-        canvas_box = await canvas.bounding_box()
-        if not canvas_box:
-            print(f"      [!] Canvas 크기를 알 수 없음")
+        if not box:
+            print(f"      [!] 좌석 영역을 찾을 수 없음")
             return False
 
-        # Canvas 내에서 좌석 클릭
-        # PixiJS 좌석은 그리드 형태로 배치됨
-        # Canvas 크기 기반으로 좌석 영역 추정
-        cx, cy = canvas_box["x"], canvas_box["y"]
-        cw, ch = canvas_box["width"], canvas_box["height"]
+        cx, cy = box["x"], box["y"]
+        cw, ch = box["width"], box["height"]
 
-        # ── 좌석 등급/구역별 Canvas 영역 매핑 ──
-        # PixiJS Canvas 좌표 기반 (섹션 레이아웃 추정)
-        #   상단: 스테이지 (0~25%)
-        #   중앙: 1층 좌석 (25~65%)  ← OP, 1F-A/B/C
-        #   하단: 2층 좌석 (65~90%)  ← 2F-A/B/C
-        #   좌→우: A구역(15~40%), B구역(40~60%), C구역(60~85%)
+        selected = 0
+        for i in range(max_seats):
+            # 좌석 영역 (상단 30~60% 범위에 1층 좌석 분포)
+            sx = cx + cw * random.uniform(0.2, 0.8)
+            sy = cy + ch * random.uniform(0.15, 0.55)
 
-        SECTION_MAP = {
-            "OP":   (0.30, 0.60, 0.25, 0.35),  # (left%, right%, top%, bottom%)
-            "1F-A": (0.15, 0.38, 0.35, 0.60),
-            "1F-B": (0.38, 0.62, 0.35, 0.60),
-            "1F-C": (0.62, 0.85, 0.35, 0.60),
-            "2F-A": (0.15, 0.38, 0.65, 0.85),
-            "2F-B": (0.38, 0.62, 0.65, 0.85),
-            "2F-C": (0.62, 0.85, 0.65, 0.85),
-        }
+            await self.mouse.click_at(sx, sy)
+            selected += 1
+            self._be.seat_hold_attempts += 1
+            print(f"      좌석 {selected}/{max_seats} 클릭 (x={sx:.0f}, y={sy:.0f})")
+            await self._delay()
 
-        # 등급별 Canvas 영역 (등급 = 가격대 → 위치 추정)
-        GRADE_MAP = {
-            "vip": (0.30, 0.70, 0.25, 0.40),  # VIP: 1층 앞쪽 중앙
-            "r":   (0.20, 0.80, 0.35, 0.50),  # R석: 1층 중앙
-            "s":   (0.15, 0.85, 0.50, 0.65),  # S석: 1층 뒤쪽
-            "a":   (0.15, 0.85, 0.65, 0.85),  # A석: 2층
-        }
-
-        target_section = self.booking.get("seat_section", "any").upper()
-        target_grade = self.booking.get("seat_grade", "any").lower()
-        max_seats = self.booking.get("seat_count", 2)
-        strategy = self.cfg["seat_strategy"]
-
-        # 클릭 영역 결정: 구역 > 등급 > 전체
-        if target_section != "ANY" and target_section in SECTION_MAP:
-            l, r, t, b = SECTION_MAP[target_section]
-            print(f"      구역 지정: {target_section}")
-        elif target_grade != "any" and target_grade in GRADE_MAP:
-            l, r, t, b = GRADE_MAP[target_grade]
-            print(f"      등급 지정: {target_grade.upper()}")
-        else:
-            l, r, t, b = 0.15, 0.85, 0.25, 0.85
-            print(f"      구역/등급: 전체 (any)")
-
-        seat_area_left = cx + cw * l
-        seat_area_right = cx + cw * r
-        seat_area_top = cy + ch * t
-        seat_area_bottom = cy + ch * b
-
-        selected_count = 0
-
-        print(f"      전략: {strategy}, 매수: {max_seats}석")
-
-        if strategy in ("first_available", "best_available"):
-            for i in range(max_seats):
-                row = i // 4
-                col = i % 4
-                sx = seat_area_left + (seat_area_right - seat_area_left) * (0.3 + col * 0.1)
-                sy = seat_area_top + (seat_area_bottom - seat_area_top) * (0.3 + row * 0.15)
-
-                await self.mouse.click_at(sx, sy)
-                selected_count += 1
-                self._be.seat_hold_attempts += 1
-                print(f"      좌석 {selected_count}/{max_seats} 클릭 (x={sx:.0f}, y={sy:.0f})")
-
-                await self._delay()
-
-        elif strategy in ("random_good", "browse_then_pick"):
-            if strategy == "browse_then_pick" and self.level >= 8:
-                browse_count = random.randint(4, 8)
-                for _ in range(browse_count):
-                    bx = random.uniform(seat_area_left, seat_area_right)
-                    by = random.uniform(seat_area_top, seat_area_bottom)
-                    await self.mouse.move_to(bx, by)
-                    await asyncio.sleep(random.uniform(0.3, 1.0))
-
-            for i in range(max_seats):
-                sx = random.uniform(seat_area_left, seat_area_right)
-                sy = random.uniform(seat_area_top, seat_area_bottom)
-
-                await self.mouse.click_at(sx, sy)
-                selected_count += 1
-                self._be.seat_hold_attempts += 1
-                print(f"      좌석 {selected_count}/{max_seats} 클릭 (x={sx:.0f}, y={sy:.0f})")
-
-                await self._delay()
-
-        self._be.seat_view_to_hold_ms = (time.time() - seat_view_start) * 1000
-        self._be.selected_seat_ids = list(range(selected_count))
-
-        # Level 10: 잘못 클릭 후 취소/재선택
-        if self.cfg.get("misclick_chance", 0) > 0 and random.random() < self.cfg["misclick_chance"]:
-            print(f"      (Lv10: 잘못 클릭, 선택 취소 클릭)")
-            try:
-                await self._click_selector('button:has-text("선택 취소")', "선택 취소")
-                self._be.seat_change_count += 1
-                # 다시 선택
-                sx = random.uniform(seat_area_left, seat_area_right)
-                sy = random.uniform(seat_area_top, seat_area_bottom)
-                await self.mouse.click_at(sx, sy)
-            except Exception:
-                pass
-
-        print(f"      -> 좌석 {selected_count}석 선택 완료")
-        return selected_count > 0
-
-    async def _select_seats_dom(self):
-        """Canvas가 없을 때 DOM 기반 좌석 선택 (폴백)"""
-        selectors = [
-            '[data-status="AVAILABLE"]',
-            '.seat.available',
-            'button.seat:not([disabled])',
-            '[class*="seat"][class*="available"]',
-        ]
-        for sel in selectors:
-            seats = await self.page.query_selector_all(sel)
-            if seats:
-                max_seats = min(4, len(seats))
-                for i in range(max_seats):
-                    box = await seats[i].bounding_box()
-                    if box:
-                        await self.mouse.click_at(
-                            box["x"] + box["width"] / 2,
-                            box["y"] + box["height"] / 2,
-                        )
-                        await self._delay()
-                return True
-        return False
+        print(f"      -> 좌석 {selected}석 클릭 (좌표)")
+        return selected > 0
 
     # ================================================================
     # Step 6: 결제하기 클릭 → 결제 페이지
@@ -979,7 +932,15 @@ class TruveMacro:
 
         await self.page.wait_for_load_state("networkidle")
         await asyncio.sleep(1)
-        print(f"      -> 결제 페이지 로딩 완료")
+
+        # 실제 결제 페이지로 이동했는지 확인
+        if "/payments" not in self.page.url:
+            print(f"      [!] 결제 페이지 이동 실패 (현재: {self.page.url})")
+            print(f"      [!] 좌석 선점이 안 됐을 수 있음, 직접 이동 시도")
+            await self.page.goto(f"{self.base_url}/payments", wait_until="networkidle")
+            await asyncio.sleep(1)
+
+        print(f"      -> 결제 페이지 로딩 완료 ({self.page.url})")
 
     # ================================================================
     # Step 7: 예약자 정보 입력 + 결제
