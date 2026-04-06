@@ -303,35 +303,92 @@ class TruveMacro:
         """
         화면 위에 떠있는 팝업/모달/공연안내 등을 자동으로 닫는다.
         매 스텝 전에 호출하여 클릭 차단 요소를 제거.
+        여러 팝업이 겹쳐있을 수 있으므로 반복 시도.
         """
-        # 닫기 버튼 후보 셀렉터 (우선순위 순)
-        close_selectors = [
-            'button:has-text("닫기")',
-            'button:has-text("확인")',
-            'button:has-text("X")',
-            'button:has-text("x")',
-            '[aria-label="닫기"]',
-            '[aria-label="close"]',
-            '[class*="close"]',
-            '[class*="Close"]',
-            'button[class*="dismiss"]',
-            # 모달 오버레이 바깥 클릭으로 닫기
-            '[class*="overlay"]',
-            '[class*="backdrop"]',
-        ]
+        dismissed = False
 
-        for sel in close_selectors:
-            try:
-                btns = await self.page.query_selector_all(sel)
-                for btn in btns:
-                    if await btn.is_visible():
-                        await btn.click(force=True)
-                        await asyncio.sleep(0.3)
-                        print(f"      [팝업] 닫기 클릭: {sel}")
-                        return True
-            except Exception:
-                continue
-        return False
+        for _attempt in range(3):  # 최대 3겹 팝업 처리
+            found = False
+
+            # 1차: Playwright 셀렉터로 닫기
+            close_selectors = [
+                'button:has-text("닫기")',
+                'button:has-text("확인")',
+                '[aria-label="닫기"]',
+                '[aria-label="close"]',
+                '[aria-label="Close"]',
+                'button:has-text("X")',
+                'button:has-text("x")',
+                '[class*="close"]:not([class*="closed"])',
+                '[class*="Close"]:not([class*="Closed"])',
+                'button[class*="dismiss"]',
+                # SVG 닫기 아이콘 (X 모양)
+                'button > svg',
+                '[role="dialog"] button:first-child',
+            ]
+
+            for sel in close_selectors:
+                try:
+                    btns = await self.page.query_selector_all(sel)
+                    for btn in btns:
+                        try:
+                            if await btn.is_visible():
+                                await btn.click(force=True, timeout=2000)
+                                await asyncio.sleep(0.5)
+                                print(f"      [팝업] 닫기: {sel}")
+                                found = True
+                                dismissed = True
+                                break
+                        except Exception:
+                            continue
+                    if found:
+                        break
+                except Exception:
+                    continue
+
+            if not found:
+                # 2차: JS로 모달/다이얼로그 강제 닫기
+                try:
+                    closed_js = await self.page.evaluate("""() => {
+                        // dialog 요소 닫기
+                        const dialogs = document.querySelectorAll('dialog[open]');
+                        dialogs.forEach(d => d.close());
+
+                        // role=dialog 내 닫기 버튼 찾아 클릭
+                        const modals = document.querySelectorAll('[role="dialog"]');
+                        for (const modal of modals) {
+                            const closeBtn = modal.querySelector(
+                                'button[aria-label*="닫"], button[aria-label*="close"], button[aria-label*="Close"]'
+                            );
+                            if (closeBtn) { closeBtn.click(); return true; }
+                            // 첫 번째 버튼이 닫기인 경우 많음
+                            const firstBtn = modal.querySelector('button');
+                            if (firstBtn && firstBtn.textContent.trim().length <= 4) {
+                                firstBtn.click(); return true;
+                            }
+                        }
+
+                        // Escape 키로 닫기
+                        document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}));
+                        return false;
+                    }""")
+                    if closed_js:
+                        await asyncio.sleep(0.5)
+                        dismissed = True
+                        continue
+                except Exception:
+                    pass
+
+                # 3차: Escape 키 직접 누르기
+                try:
+                    await self.page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
+                except Exception:
+                    pass
+
+                break  # 더 이상 닫을 팝업 없음
+
+        return dismissed
 
     async def _click_selector(self, selector: str, desc: str = ""):
         """
@@ -1149,6 +1206,99 @@ class TruveMacro:
         else:
             await self._toss_card(toss)
 
+    async def _toss_fill_input(self, toss, selectors: list, value: str, label: str):
+        """
+        Toss SDK iframe/팝업 안에서 input에 값 입력.
+        iframe 안에서는 일반 fill()/type()이 안 먹을 수 있어서 여러 방식 시도.
+        """
+        for sel in selectors:
+            try:
+                field = await toss.query_selector(sel)
+                if not field:
+                    continue
+
+                # 방법 1: 클릭 → 전체선택 → 키보드 입력
+                await field.click(force=True)
+                await asyncio.sleep(0.2)
+
+                # 기존 값 삭제
+                await toss.keyboard.press("Control+A") if hasattr(toss, 'keyboard') else None
+                await toss.keyboard.press("Backspace") if hasattr(toss, 'keyboard') else None
+                await asyncio.sleep(0.1)
+
+                # 방법 1a: type (한 글자씩)
+                try:
+                    await field.type(value, delay=30)
+                    current = await field.input_value()
+                    if current and len(current) >= len(value) - 1:
+                        print(f"      -> {label} 입력 완료 (type)")
+                        return True
+                except Exception:
+                    pass
+
+                # 방법 2: fill (한번에)
+                try:
+                    await field.fill(value)
+                    current = await field.input_value()
+                    if current and len(current) >= len(value) - 1:
+                        print(f"      -> {label} 입력 완료 (fill)")
+                        return True
+                except Exception:
+                    pass
+
+                # 방법 3: JS로 직접 값 설정 + input 이벤트 발생
+                try:
+                    await field.evaluate(f"""(el) => {{
+                        el.value = '{value}';
+                        el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    }}""")
+                    print(f"      -> {label} 입력 완료 (JS)")
+                    return True
+                except Exception:
+                    pass
+
+            except Exception:
+                continue
+
+        print(f"      [!] {label} 입력 실패 (모든 방법 시도)")
+        return False
+
+    async def _toss_click_text(self, toss, text: str, label: str):
+        """Toss SDK 안에서 텍스트로 요소 클릭. 여러 방법 시도."""
+        # 방법 1: Playwright 텍스트 셀렉터
+        try:
+            btn = await toss.query_selector(f'text={text}')
+            if btn:
+                await btn.click(force=True)
+                print(f"      -> {label} 완료")
+                return True
+        except Exception:
+            pass
+
+        # 방법 2: JS로 텍스트 매칭 후 클릭
+        try:
+            clicked = await toss.evaluate(f"""() => {{
+                const walker = document.createTreeWalker(
+                    document.body, NodeFilter.SHOW_TEXT
+                );
+                while (walker.nextNode()) {{
+                    if (walker.currentNode.textContent.includes('{text}')) {{
+                        const el = walker.currentNode.parentElement;
+                        if (el) {{ el.click(); return true; }}
+                    }}
+                }}
+                return false;
+            }}""")
+            if clicked:
+                print(f"      -> {label} 완료 (JS)")
+                return True
+        except Exception:
+            pass
+
+        print(f"      [!] {label} 실패")
+        return False
+
     async def _toss_virtual_account(self, toss, applicant: dict):
         """
         Toss SDK - 무통장 입금 처리
@@ -1168,113 +1318,60 @@ class TruveMacro:
         # ── 1. 은행 선택 ──
         print(f"      은행 선택: {bank}")
         await self._delay()
+
+        # select 드롭다운 형태
         try:
-            # Toss SDK 은행 목록: 드롭다운 또는 버튼 리스트
-            # 셀렉트 박스 형태
-            bank_select = await toss.query_selector(
-                'select, [role="listbox"], [class*="bank"], [class*="select"]'
-            )
+            bank_select = await toss.query_selector('select')
             if bank_select:
-                tag = await bank_select.evaluate("el => el.tagName.toLowerCase()")
-                if tag == "select":
-                    await bank_select.select_option(label=bank)
-                else:
-                    await bank_select.click()
-                    await asyncio.sleep(0.5)
-                    bank_opt = await toss.query_selector(f'text={bank}')
-                    if bank_opt:
-                        await bank_opt.click()
+                await bank_select.select_option(label=bank)
+                print(f"      -> 은행 선택 완료 (select)")
             else:
-                # 버튼/라디오 형태의 은행 선택
-                bank_btn = await toss.query_selector(f'text={bank}')
-                if bank_btn:
-                    box = await bank_btn.bounding_box()
-                    if box:
-                        await self.mouse.click_at(
-                            box["x"] + box["width"] / 2,
-                            box["y"] + box["height"] / 2,
-                        )
-                    else:
-                        await bank_btn.click()
-                else:
-                    # 최종 폴백: 텍스트 매칭
-                    await toss.click(f'text="{bank}"')
-            print(f"      -> 은행 선택 완료")
+                # 버튼/텍스트 형태
+                await self._toss_click_text(toss, bank, f"은행 {bank}")
         except Exception as e:
-            print(f"      [!] 은행 선택 실패: {type(e).__name__}")
+            # 폴백: 텍스트 매칭
+            await self._toss_click_text(toss, bank, f"은행 {bank}")
         await self._delay()
 
         # ── 2. 입금자명 입력 ──
         print(f"      입금자명: {depositor}")
-        try:
-            # 입금자명 입력 필드
-            depositor_selectors = [
-                'input[name*="depositor"]',
-                'input[name*="name"]',
-                'input[placeholder*="입금자"]',
-                'input[placeholder*="이름"]',
-                'input[placeholder*="성명"]',
-            ]
-            for sel in depositor_selectors:
-                field = await toss.query_selector(sel)
-                if field:
-                    await field.fill("")
-                    await field.type(depositor, delay=self.cfg["typing_delay_ms"][0])
-                    print(f"      -> 입금자명 입력 완료")
-                    break
-        except Exception as e:
-            print(f"      [!] 입금자명 입력 실패: {type(e).__name__}")
+        await self._toss_fill_input(toss, [
+            'input[name*="depositor"]',
+            'input[name*="name"]',
+            'input[placeholder*="입금자"]',
+            'input[placeholder*="이름"]',
+            'input[placeholder*="성명"]',
+            'input:not([type="tel"]):not([type="email"]):not([inputmode="numeric"])',
+        ], depositor, "입금자명")
         await self._delay()
 
         # ── 3. 현금영수증 선택 ──
         print(f"      현금영수증: {cash_receipt}")
-        try:
-            receipt_btn = await toss.query_selector(f'text={cash_receipt}')
-            if receipt_btn:
-                await receipt_btn.click()
-                print(f"      -> {cash_receipt} 선택 완료")
+        await self._toss_click_text(toss, cash_receipt, f"현금영수증 {cash_receipt}")
+        await asyncio.sleep(0.8)
 
-                # 소득공제 선택 시 → 휴대폰번호 입력
-                if cash_receipt == "소득공제":
-                    await asyncio.sleep(0.5)
-                    phone_selectors = [
-                        'input[name*="phone"]',
-                        'input[type="tel"]',
-                        'input[placeholder*="휴대폰"]',
-                        'input[placeholder*="전화"]',
-                        'input[placeholder*="010"]',
-                        'input[inputmode="tel"]',
-                    ]
-                    for sel in phone_selectors:
-                        field = await toss.query_selector(sel)
-                        if field:
-                            await field.fill("")
-                            await field.type(phone, delay=self.cfg["typing_delay_ms"][0])
-                            print(f"      -> 소득공제 휴대폰번호 입력 완료")
-                            break
-            else:
-                print(f"      [!] 현금영수증 '{cash_receipt}' 옵션 못찾음")
-        except Exception as e:
-            print(f"      [!] 현금영수증 선택 실패: {type(e).__name__}")
+        # ── 4. 소득공제 시 휴대폰번호 입력 ──
+        if cash_receipt == "소득공제":
+            print(f"      소득공제 전화번호: {phone}")
+            await self._toss_fill_input(toss, [
+                'input[type="tel"]',
+                'input[inputmode="tel"]',
+                'input[inputmode="numeric"]',
+                'input[name*="phone"]',
+                'input[placeholder*="010"]',
+                'input[placeholder*="휴대폰"]',
+                'input[placeholder*="전화"]',
+                'input[placeholder*="번호"]',
+            ], phone, "소득공제 전화번호")
         await self._delay()
 
-        # ── 4. 결제하기 / 확인 버튼 클릭 ──
+        # ── 5. 결제하기 / 확인 버튼 ──
         print(f"      [Toss] 최종 결제 버튼 클릭")
-        try:
-            pay_btns = [
-                'button:has-text("결제하기")',
-                'button:has-text("확인")',
-                'button:has-text("입금하기")',
-                'button[type="submit"]',
-            ]
-            for sel in pay_btns:
-                btn = await toss.query_selector(sel)
-                if btn:
-                    await btn.click()
-                    print(f"      -> Toss 결제 요청 완료")
-                    break
-        except Exception as e:
-            print(f"      [!] Toss 결제 버튼 실패: {type(e).__name__}")
+        btn_texts = ["결제하기", "확인", "입금하기", "동의하고 결제하기"]
+        for txt in btn_texts:
+            result = await self._toss_click_text(toss, txt, "Toss 결제")
+            if result:
+                break
 
         await asyncio.sleep(3)
         print(f"      -> 무통장 입금 처리 완료")
@@ -1287,44 +1384,29 @@ class TruveMacro:
         card_company = self.booking.get("card_company", "삼성")
 
         print(f"      [카드 결제]")
-
-        # ── 카드사 선택 또는 간편결제 선택 ──
         print(f"      카드사: {card_company}")
         await self._delay()
-        try:
-            card_btn = await toss.query_selector(f'text={card_company}')
-            if card_btn:
-                await card_btn.click()
-                print(f"      -> {card_company} 선택 완료")
-            else:
-                # 첫 번째 카드사 선택
-                first = await toss.query_selector(
-                    '[class*="card"], [class*="bank"], button'
-                )
+
+        # 카드사 선택
+        result = await self._toss_click_text(toss, card_company, f"{card_company} 선택")
+        if not result:
+            # 폴백: 아무 카드사나 클릭
+            try:
+                first = await toss.query_selector('button, [class*="card"], [role="radio"]')
                 if first:
-                    await first.click()
+                    await first.click(force=True)
                     print(f"      -> 첫 번째 결제수단 선택")
-        except Exception as e:
-            print(f"      [!] 카드사 선택 실패: {type(e).__name__}")
+            except Exception:
+                pass
 
         await self._delay()
 
-        # ── 결제하기 버튼 ──
-        try:
-            pay_btns = [
-                'button:has-text("결제하기")',
-                'button:has-text("다음")',
-                'button:has-text("확인")',
-                'button[type="submit"]',
-            ]
-            for sel in pay_btns:
-                btn = await toss.query_selector(sel)
-                if btn:
-                    await btn.click()
-                    print(f"      -> Toss 카드 결제 요청 완료")
-                    break
-        except Exception as e:
-            print(f"      [!] Toss 결제 버튼 실패: {type(e).__name__}")
+        # 결제하기 버튼
+        btn_texts = ["결제하기", "다음", "확인", "동의하고 결제하기"]
+        for txt in btn_texts:
+            result = await self._toss_click_text(toss, txt, "Toss 결제")
+            if result:
+                break
 
         await asyncio.sleep(3)
         print(f"      -> 카드 결제 처리 완료")
