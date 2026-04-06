@@ -1346,44 +1346,39 @@ class TruveMacro:
         ], depositor, "입금자명")
         await self._delay()
 
-        # ── 3. 현금영수증 선택 ──
-        # Toss SDK 현금영수증 옵션:
-        #   "소득공제" → 전화번호 입력 필요
-        #   "지출증빙" → 사업자번호 입력 필요
-        #   "미발행"/"신청안함" → 입력 없음, 바로 결제
-        print(f"      현금영수증: {cash_receipt}")
+        # ── 3. 현금영수증: 무조건 미발행 (전화번호 입력 회피) ──
+        # 소득공제는 전화번호 입력이 필요한데 Toss iframe에서 안 먹힘
+        # → 미발행/신청안함 선택해서 바로 결제 진행
+        print(f"      현금영수증: 미발행 선택")
+        no_receipt_texts = ["미발행", "신청안함", "발행안함", "안 함", "미신청"]
+        receipt_clicked = False
+        for txt in no_receipt_texts:
+            result = await self._toss_click_text(toss, txt, f"현금영수증 {txt}")
+            if result:
+                receipt_clicked = True
+                break
 
-        if cash_receipt == "미발행":
-            # "미발행" 또는 "신청안함" 체크 → 입력 필요 없음
-            click_texts = ["미발행", "신청안함", "발행안함", "안 함"]
-            for txt in click_texts:
-                result = await self._toss_click_text(toss, txt, f"현금영수증 {txt}")
-                if result:
-                    break
-        else:
-            await self._toss_click_text(toss, cash_receipt, f"현금영수증 {cash_receipt}")
-            await asyncio.sleep(0.8)
-
-            # 소득공제 → 전화번호 입력
-            if cash_receipt == "소득공제":
-                print(f"      소득공제 전화번호: {phone}")
-                result = await self._toss_fill_input(toss, [
-                    'input[type="tel"]',
-                    'input[inputmode="tel"]',
-                    'input[inputmode="numeric"]',
-                    'input[name*="phone"]',
-                    'input[placeholder*="010"]',
-                    'input[placeholder*="휴대폰"]',
-                    'input[placeholder*="전화"]',
-                    'input[placeholder*="번호"]',
-                ], phone, "소득공제 전화번호")
-
-                if not result:
-                    # 전화번호 입력 실패 → 미발행으로 폴백
-                    print(f"      [!] 전화번호 입력 실패, 미발행으로 전환")
-                    for txt in ["미발행", "신청안함", "발행안함"]:
-                        if await self._toss_click_text(toss, txt, f"{txt} 전환"):
-                            break
+        if not receipt_clicked:
+            # 체크박스/라디오 형태일 수 있음
+            try:
+                await toss.evaluate("""() => {
+                    // 현금영수증 관련 체크박스/라디오 찾기
+                    const inputs = document.querySelectorAll('input[type="radio"], input[type="checkbox"]');
+                    for (const inp of inputs) {
+                        const label = inp.closest('label') || inp.parentElement;
+                        const text = label ? label.textContent : '';
+                        if (text.includes('미발행') || text.includes('신청안함') || text.includes('안 함')) {
+                            inp.click();
+                            return;
+                        }
+                    }
+                    // 마지막 라디오 버튼이 보통 미발행
+                    const radios = document.querySelectorAll('input[type="radio"]');
+                    if (radios.length > 0) radios[radios.length - 1].click();
+                }""")
+                print(f"      -> 미발행 (라디오/체크박스)")
+            except Exception:
+                print(f"      [!] 현금영수증 선택 실패 (결제 진행 시도)")
 
         await self._delay()
 
