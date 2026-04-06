@@ -307,60 +307,48 @@ class TruveMacro:
         """
         dismissed = False
 
-        # 모달/다이얼로그가 실제로 떠있는지 먼저 확인
-        has_modal = await self.page.evaluate("""() => {
-            const dialog = document.querySelector('dialog[open], [role="dialog"], [class*="modal"][class*="open"], [class*="Modal"]');
-            return !!dialog;
-        }""")
-
-        if not has_modal:
-            return False  # 모달 없으면 아무것도 안 함
-
-        # 모달이 있을 때만 닫기 시도
-        # 1차: JS로 모달 내부 닫기 버튼만 정확히 타겟
+        # 보호 대상: 캡차/VQA/대기열 모달은 절대 닫지 않음
+        # 닫아도 되는 것: 공연안내, 알림, 쿠키 동의 등 일반 팝업만
         try:
-            closed = await self.page.evaluate("""() => {
-                // dialog 요소
-                const dialogs = document.querySelectorAll('dialog[open]');
-                if (dialogs.length > 0) {
-                    dialogs.forEach(d => d.close());
-                    return true;
-                }
+            result = await self.page.evaluate("""() => {
+                const modals = document.querySelectorAll(
+                    'dialog[open], [role="dialog"], [class*="modal"], [class*="Modal"]'
+                );
+                if (modals.length === 0) return 'none';
 
-                // role=dialog 또는 모달 클래스 내부의 닫기 버튼
-                const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]');
                 for (const modal of modals) {
-                    // aria-label로 닫기 버튼 찾기
+                    const text = modal.textContent || '';
+
+                    // 캡차/VQA/대기열/결제 모달이면 → 절대 닫지 않음
+                    const protect = ['시작하기', '캡차', 'captcha', '대기열',
+                                     '대기 중', '접속 중', 'WAITING', '결제하기',
+                                     '타일', 'tile'];
+                    const isProtected = protect.some(kw => text.includes(kw));
+                    if (isProtected) continue;  // 이 모달은 건드리지 않음
+
+                    // 일반 팝업 → 닫기 버튼 찾아서 클릭
                     const closeBtn = modal.querySelector(
                         'button[aria-label*="닫"], button[aria-label*="close"], button[aria-label*="Close"]'
                     );
-                    if (closeBtn) { closeBtn.click(); return true; }
+                    if (closeBtn) { closeBtn.click(); return 'closed'; }
 
-                    // 텍스트가 "닫기"/"확인"/"X"인 버튼
                     const buttons = modal.querySelectorAll('button');
                     for (const btn of buttons) {
                         const txt = btn.textContent.trim();
-                        if (txt === '닫기' || txt === '확인' || txt === 'X' || txt === 'x' || txt === '×') {
+                        if (txt === '닫기' || txt === 'X' || txt === 'x' || txt === '×') {
                             btn.click();
-                            return true;
+                            return 'closed';
                         }
                     }
                 }
-                return false;
+                return 'skip';
             }""")
-            if closed:
-                await asyncio.sleep(0.5)
-                print(f"      [팝업] 모달 닫기 완료")
-                return True
-        except Exception:
-            pass
 
-        # 2차: Escape 키
-        try:
-            await self.page.keyboard.press("Escape")
-            await asyncio.sleep(0.3)
-            print(f"      [팝업] Escape로 닫기")
-            return True
+            if result == "closed":
+                await asyncio.sleep(0.5)
+                print(f"      [팝업] 일반 팝업 닫기 완료")
+                return True
+
         except Exception:
             pass
 
@@ -369,14 +357,10 @@ class TruveMacro:
     async def _click_selector(self, selector: str, desc: str = ""):
         """
         CSS 셀렉터로 요소 찾아 클릭.
-        1차: 마우스 이동 → 클릭 (화면에서 보임)
-        2차: 팝업 있으면 닫고 재시도
-        3차: force 클릭 (오버레이 무시)
+        팝업 닫기는 여기서 자동 호출하지 않음 (캡차/VQA 모달 오닫기 방지).
+        필요한 스텝에서 명시적으로 _dismiss_popups() 호출할 것.
         """
         await self._delay()
-
-        # 먼저 팝업 확인/닫기
-        await self._dismiss_popups()
 
         try:
             el = await self.page.wait_for_selector(selector, timeout=10000)
@@ -398,8 +382,7 @@ class TruveMacro:
                 await el.click(force=True)
 
         except Exception:
-            # 팝업이 가리고 있을 수 있으므로 한번 더 닫기 시도 후 force 클릭
-            await self._dismiss_popups()
+            # force 클릭 재시도
             try:
                 el = await self.page.wait_for_selector(selector, timeout=5000)
                 if desc:
@@ -625,29 +608,30 @@ class TruveMacro:
 
     async def step3_captcha(self):
         """
-        예매하기 버튼 클릭 → 캡차 모달
-        - 예매하기 버튼: bg-red-500, text="예매하기"
-        - 캡차: 3x2 그리드, 타일 클릭 후 "시작하기"
+        공연안내 팝업 닫기 → 예매하기 버튼 → 캡차(VQA) 처리
+        주의: 캡차 모달은 role="dialog"이므로 _dismiss_popups로 닫으면 안 됨!
+              공연안내 팝업만 예매하기 전에 닫는다.
         """
         print(f"\n  [Step 3/8] 예매하기 + 캡차")
         self._be.api_call_sequence.append("captcha")
 
+        # ── 공연안내 팝업만 닫기 (예매하기 전에) ──
+        # 캡차 모달이 아직 안 떴으므로 여기서만 dismiss 허용
         await self._dismiss_popups()
         await self._delay()
 
-        # "예매하기" 버튼 클릭
+        # ── 예매하기 버튼 클릭 ──
         await self._click_selector(
             'button:has-text("예매하기")',
             "예매하기 버튼"
         )
 
-        await asyncio.sleep(1)  # 모달 열림 대기
+        # ── 캡차(VQA) 모달 대기 ──
+        # 여기서부터는 _dismiss_popups 절대 호출 금지!
+        await asyncio.sleep(2)
 
-        # 캡차: 6타일 중 랜덤 1개 선택
-        # 캡차 타일은 aspect-square rounded-xl 클래스
+        # ── 캡차 타일 선택 (3x2 = 6개 중 1개) ──
         await self._delay()
-
-        # 타일 그리드에서 랜덤 타일 클릭
         tile_index = random.randint(0, 5)
         try:
             tiles = await self.page.query_selector_all(
@@ -661,18 +645,43 @@ class TruveMacro:
                         box["x"] + box["width"] / 2,
                         box["y"] + box["height"] / 2,
                     )
+            else:
+                print(f"      [!] 캡차 타일 {len(tiles) if tiles else 0}개 발견, 클릭 시도")
+                # 폴백: 모달 내부에서 클릭 가능한 div 찾기
+                await self.page.evaluate("""() => {
+                    const modal = document.querySelector('[role="dialog"]');
+                    if (!modal) return;
+                    const tiles = modal.querySelectorAll('[class*="aspect-square"], [class*="rounded-xl"]');
+                    if (tiles.length > 0) tiles[Math.floor(Math.random() * tiles.length)].click();
+                }""")
         except Exception:
-            # 대체: 캡차 영역 직접 클릭
-            print(f"      캡차 타일 직접 클릭 시도")
-            pass
+            print(f"      [!] 캡차 타일 클릭 실패")
 
         await self._delay()
 
-        # "시작하기" 버튼 클릭
-        await self._click_selector(
-            'button:has-text("시작하기")',
-            "시작하기 버튼"
-        )
+        # ── "시작하기" 버튼 클릭 (캡차 모달 내부) ──
+        # _click_selector 사용하되 dismiss 안 함 (이미 위에서 제거)
+        try:
+            await self._click_selector(
+                'button:has-text("시작하기")',
+                "시작하기 버튼"
+            )
+        except Exception:
+            # 폴백: 모달 내부에서 시작하기 버튼 JS 클릭
+            try:
+                await self.page.evaluate("""() => {
+                    const modal = document.querySelector('[role="dialog"]');
+                    if (!modal) return;
+                    const btns = modal.querySelectorAll('button');
+                    for (const btn of btns) {
+                        if (btn.textContent.includes('시작하기') || btn.textContent.includes('접속')) {
+                            btn.click(); return;
+                        }
+                    }
+                }""")
+                print(f"      -> 시작하기 (JS 클릭)")
+            except Exception:
+                print(f"      [!] 시작하기 버튼 실패")
 
         await asyncio.sleep(1)
         print(f"      -> 캡차 통과")
@@ -983,7 +992,7 @@ class TruveMacro:
         """
         print(f"\n  [Step 7/8] Payment-ready + 예약자 정보 입력")
         self._be.api_call_sequence.append("payment")
-        await self._dismiss_popups()
+        # 결제 페이지에서는 dismiss 안 함 (결제 모달 오닫기 방지)
 
         # ── 1. 예약자 정보 입력 ──
         print(f"      [예약자 정보]")
