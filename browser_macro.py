@@ -307,88 +307,64 @@ class TruveMacro:
         """
         dismissed = False
 
-        for _attempt in range(3):  # 최대 3겹 팝업 처리
-            found = False
+        # 모달/다이얼로그가 실제로 떠있는지 먼저 확인
+        has_modal = await self.page.evaluate("""() => {
+            const dialog = document.querySelector('dialog[open], [role="dialog"], [class*="modal"][class*="open"], [class*="Modal"]');
+            return !!dialog;
+        }""")
 
-            # 1차: Playwright 셀렉터로 닫기
-            close_selectors = [
-                'button:has-text("닫기")',
-                'button:has-text("확인")',
-                '[aria-label="닫기"]',
-                '[aria-label="close"]',
-                '[aria-label="Close"]',
-                'button:has-text("X")',
-                'button:has-text("x")',
-                '[class*="close"]:not([class*="closed"])',
-                '[class*="Close"]:not([class*="Closed"])',
-                'button[class*="dismiss"]',
-                # SVG 닫기 아이콘 (X 모양)
-                'button > svg',
-                '[role="dialog"] button:first-child',
-            ]
+        if not has_modal:
+            return False  # 모달 없으면 아무것도 안 함
 
-            for sel in close_selectors:
-                try:
-                    btns = await self.page.query_selector_all(sel)
-                    for btn in btns:
-                        try:
-                            if await btn.is_visible():
-                                await btn.click(force=True, timeout=2000)
-                                await asyncio.sleep(0.5)
-                                print(f"      [팝업] 닫기: {sel}")
-                                found = True
-                                dismissed = True
-                                break
-                        except Exception:
-                            continue
-                    if found:
-                        break
-                except Exception:
-                    continue
+        # 모달이 있을 때만 닫기 시도
+        # 1차: JS로 모달 내부 닫기 버튼만 정확히 타겟
+        try:
+            closed = await self.page.evaluate("""() => {
+                // dialog 요소
+                const dialogs = document.querySelectorAll('dialog[open]');
+                if (dialogs.length > 0) {
+                    dialogs.forEach(d => d.close());
+                    return true;
+                }
 
-            if not found:
-                # 2차: JS로 모달/다이얼로그 강제 닫기
-                try:
-                    closed_js = await self.page.evaluate("""() => {
-                        // dialog 요소 닫기
-                        const dialogs = document.querySelectorAll('dialog[open]');
-                        dialogs.forEach(d => d.close());
+                // role=dialog 또는 모달 클래스 내부의 닫기 버튼
+                const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]');
+                for (const modal of modals) {
+                    // aria-label로 닫기 버튼 찾기
+                    const closeBtn = modal.querySelector(
+                        'button[aria-label*="닫"], button[aria-label*="close"], button[aria-label*="Close"]'
+                    );
+                    if (closeBtn) { closeBtn.click(); return true; }
 
-                        // role=dialog 내 닫기 버튼 찾아 클릭
-                        const modals = document.querySelectorAll('[role="dialog"]');
-                        for (const modal of modals) {
-                            const closeBtn = modal.querySelector(
-                                'button[aria-label*="닫"], button[aria-label*="close"], button[aria-label*="Close"]'
-                            );
-                            if (closeBtn) { closeBtn.click(); return true; }
-                            // 첫 번째 버튼이 닫기인 경우 많음
-                            const firstBtn = modal.querySelector('button');
-                            if (firstBtn && firstBtn.textContent.trim().length <= 4) {
-                                firstBtn.click(); return true;
-                            }
+                    // 텍스트가 "닫기"/"확인"/"X"인 버튼
+                    const buttons = modal.querySelectorAll('button');
+                    for (const btn of buttons) {
+                        const txt = btn.textContent.trim();
+                        if (txt === '닫기' || txt === '확인' || txt === 'X' || txt === 'x' || txt === '×') {
+                            btn.click();
+                            return true;
                         }
+                    }
+                }
+                return false;
+            }""")
+            if closed:
+                await asyncio.sleep(0.5)
+                print(f"      [팝업] 모달 닫기 완료")
+                return True
+        except Exception:
+            pass
 
-                        // Escape 키로 닫기
-                        document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}));
-                        return false;
-                    }""")
-                    if closed_js:
-                        await asyncio.sleep(0.5)
-                        dismissed = True
-                        continue
-                except Exception:
-                    pass
+        # 2차: Escape 키
+        try:
+            await self.page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
+            print(f"      [팝업] Escape로 닫기")
+            return True
+        except Exception:
+            pass
 
-                # 3차: Escape 키 직접 누르기
-                try:
-                    await self.page.keyboard.press("Escape")
-                    await asyncio.sleep(0.3)
-                except Exception:
-                    pass
-
-                break  # 더 이상 닫을 팝업 없음
-
-        return dismissed
+        return False
 
     async def _click_selector(self, selector: str, desc: str = ""):
         """
@@ -1575,9 +1551,14 @@ class TruveMacro:
         print(f"{'='*60}")
 
         try:
-            # 브라우저가 아직 안 열려있으면 setup
-            if not self.browser:
+            # 브라우저가 없거나 죽었으면 (재)시작
+            if not self.browser or not self.browser.is_connected():
                 await self.setup()
+            # 페이지가 닫혔으면 새 탭
+            elif not self.page or self.page.is_closed():
+                self.page = await self.context.new_page()
+                self.mouse = MouseController(self.page, self.cfg)
+                self.keyboard = KeyboardController(self.page, self.cfg)
 
             # ── 실제 API 흐름 순서 ──
             # login → show/schedule → captcha → queue → session/seat → booking → payment → toss
