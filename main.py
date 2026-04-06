@@ -122,19 +122,22 @@ async def run_macro(base_url: str, level: int, runs: int,
     print(f"  반복: {runs}회")
     print(f"{'#'*60}")
 
+    # 브라우저 한 번 열고 runs 동안 유지
+    macro = TruveMacro(base_url, level, data_logger, booking_options=booking_options)
+
     for run_idx in range(runs):
         account = accounts[run_idx % len(accounts)]
-        # [Rule 4] 이메일 마스킹 출력
         print(f"\n  --- Run {run_idx + 1}/{runs} (계정: {mask_email(account['email'])}) ---")
 
+        is_last_run = (run_idx == runs - 1)
+
         try:
-            macro = TruveMacro(base_url, level, data_logger,
-                               booking_options=booking_options)
             be_record, fe_record = await macro.run(
                 account=account,
                 show_id=show_id,
                 schedule_id=schedule_id,
                 applicant=applicant,
+                keep_browser=not is_last_run,  # 마지막 run에서만 브라우저 닫기
             )
 
             data_logger.add_be_record(be_record)

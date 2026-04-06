@@ -299,11 +299,59 @@ class TruveMacro:
 
         await asyncio.sleep(delay / 1000.0)
 
+    async def _dismiss_popups(self):
+        """
+        화면 위에 떠있는 팝업/모달/공연안내 등을 자동으로 닫는다.
+        매 스텝 전에 호출하여 클릭 차단 요소를 제거.
+        """
+        # 닫기 버튼 후보 셀렉터 (우선순위 순)
+        close_selectors = [
+            'button:has-text("닫기")',
+            'button:has-text("확인")',
+            'button:has-text("X")',
+            'button:has-text("x")',
+            '[aria-label="닫기"]',
+            '[aria-label="close"]',
+            '[class*="close"]',
+            '[class*="Close"]',
+            'button[class*="dismiss"]',
+            # 모달 오버레이 바깥 클릭으로 닫기
+            '[class*="overlay"]',
+            '[class*="backdrop"]',
+        ]
+
+        for sel in close_selectors:
+            try:
+                btns = await self.page.query_selector_all(sel)
+                for btn in btns:
+                    if await btn.is_visible():
+                        await btn.click(force=True)
+                        await asyncio.sleep(0.3)
+                        print(f"      [팝업] 닫기 클릭: {sel}")
+                        return True
+            except Exception:
+                continue
+        return False
+
     async def _click_selector(self, selector: str, desc: str = ""):
-        """CSS 셀렉터로 요소 찾아 마우스로 클릭 (화면에서 보임)"""
+        """
+        CSS 셀렉터로 요소 찾아 클릭.
+        1차: 마우스 이동 → 클릭 (화면에서 보임)
+        2차: 팝업 있으면 닫고 재시도
+        3차: force 클릭 (오버레이 무시)
+        """
         await self._delay()
+
+        # 먼저 팝업 확인/닫기
+        await self._dismiss_popups()
+
         try:
             el = await self.page.wait_for_selector(selector, timeout=10000)
+
+            # 요소가 뷰포트에 보이도록 스크롤
+            await el.scroll_into_view_if_needed()
+            await asyncio.sleep(0.2)
+
             box = await el.bounding_box()
             if box:
                 cx = box["x"] + box["width"] / 2
@@ -312,10 +360,21 @@ class TruveMacro:
                     print(f"      클릭: {desc}")
                 await self.mouse.click_at(cx, cy)
             else:
-                await el.click()
-        except Exception as e:
-            print(f"      [!] 셀렉터 실패: {selector} ({e})")
-            raise
+                if desc:
+                    print(f"      클릭(직접): {desc}")
+                await el.click(force=True)
+
+        except Exception:
+            # 팝업이 가리고 있을 수 있으므로 한번 더 닫기 시도 후 force 클릭
+            await self._dismiss_popups()
+            try:
+                el = await self.page.wait_for_selector(selector, timeout=5000)
+                if desc:
+                    print(f"      클릭(force): {desc}")
+                await el.click(force=True)
+            except Exception as e:
+                print(f"      [!] 클릭 실패: {selector} ({type(e).__name__})")
+                raise
 
     async def _scroll(self):
         """레벨별 스크롤"""
@@ -540,6 +599,7 @@ class TruveMacro:
         print(f"\n  [Step 3/8] 예매하기 + 캡차")
         self._be.api_call_sequence.append("captcha")
 
+        await self._dismiss_popups()
         await self._delay()
 
         # "예매하기" 버튼 클릭
@@ -656,6 +716,7 @@ class TruveMacro:
         """
         print(f"\n  [Step 5/8] 좌석 선점")
         self._be.api_call_sequence.append("seat_select")
+        await self._dismiss_popups()
 
         # 좌석 페이지가 아니면 이동
         if "/seat" not in self.page.url:
@@ -836,6 +897,7 @@ class TruveMacro:
         """
         print(f"\n  [Step 6/8] Booking 생성 + 결제 페이지 이동")
         self._be.api_call_sequence.append("to_payment")
+        await self._dismiss_popups()
 
         await self._delay()
 
@@ -888,6 +950,7 @@ class TruveMacro:
         """
         print(f"\n  [Step 7/8] Payment-ready + 예약자 정보 입력")
         self._be.api_call_sequence.append("payment")
+        await self._dismiss_popups()
 
         # ── 1. 예약자 정보 입력 ──
         print(f"      [예약자 정보]")
@@ -922,7 +985,16 @@ class TruveMacro:
         try:
             await self._click_selector('text=현장수령', "현장수령 선택")
         except Exception:
-            pass
+            try:
+                await self.page.evaluate("""() => {
+                    const els = [...document.querySelectorAll('*')];
+                    const match = els.find(el =>
+                        el.textContent.includes('현장수령') && el.offsetParent !== null
+                    );
+                    if (match) match.click();
+                }""")
+            except Exception:
+                pass
         await self._delay()
 
         # ── 3. 결제수단 선택 ──
@@ -938,7 +1010,19 @@ class TruveMacro:
         try:
             await self._click_selector(f'text={pay_label}', f"{pay_label} 선택")
         except Exception:
-            pass
+            # 폴백: JS로 텍스트 매칭 후 강제 클릭
+            try:
+                await self.page.evaluate(f"""() => {{
+                    const els = [...document.querySelectorAll('*')];
+                    const match = els.find(el =>
+                        el.textContent.includes('{pay_label}') &&
+                        el.offsetParent !== null
+                    );
+                    if (match) match.click();
+                }}""")
+                print(f"      -> {pay_label} (JS 클릭)")
+            except Exception:
+                pass
         await self._delay()
 
         # 사람 시뮬: 결제수단 선택 후 스크롤
@@ -1246,24 +1330,54 @@ class TruveMacro:
         print(f"      -> 카드 결제 처리 완료")
 
     async def _check_agreements_individually(self):
-        """약관 3개 개별 체크 (사람처럼 하나씩)"""
-        agreement_labels = [
-            ("취소 규정", "(필수) 취소 규정"),
-            ("티켓 이용정책", "(필수) 티켓 이용정책"),
-            ("개인정보", "개인정보 제 3자 제공"),
-        ]
+        """
+        약관 3개 개별 체크 (사람처럼 하나씩).
+        커스텀 체크마크(✓) 컴포넌트이므로 여러 방법으로 시도.
+        """
+        agreement_keywords = ["취소 규정", "이용정책", "개인정보"]
+        checked = 0
 
-        for label_short, label_text in agreement_labels:
+        for keyword in agreement_keywords:
             try:
-                await self._click_selector(
-                    f'text={label_text}',
-                    f"{label_short} 동의"
-                )
+                # 방법 1: 텍스트 포함 요소의 부모/형제 클릭
+                el = await self.page.query_selector(f'text={keyword}')
+                if el:
+                    # 체크마크는 텍스트 옆에 있으므로 텍스트 자체를 클릭
+                    await el.click(force=True)
+                    checked += 1
+                    await asyncio.sleep(0.3)
+                    continue
             except Exception:
                 pass
-            await asyncio.sleep(random.uniform(0.2, 0.8))
 
-        print(f"      -> 약관 개별 동의 완료 (3/3)")
+            try:
+                # 방법 2: 부모 div 전체를 클릭 (체크마크+텍스트 포함 영역)
+                parent = await self.page.evaluate(f"""() => {{
+                    const els = [...document.querySelectorAll('*')];
+                    const match = els.find(el => el.textContent.includes('{keyword}'));
+                    if (match) {{ match.click(); return true; }}
+                    return false;
+                }}""")
+                if parent:
+                    checked += 1
+                    await asyncio.sleep(0.3)
+            except Exception:
+                pass
+
+        if checked == 0:
+            # 최종 폴백: "전체 동의"를 JS로 강제 클릭
+            try:
+                await self.page.evaluate("""() => {
+                    const els = [...document.querySelectorAll('*')];
+                    const agreeAll = els.find(el => el.textContent.includes('전체 동의'));
+                    if (agreeAll) agreeAll.click();
+                }""")
+                print(f"      -> 전체 동의 (JS 강제 클릭)")
+                return
+            except Exception:
+                pass
+
+        print(f"      -> 약관 동의 {checked}/{len(agreement_keywords)}개 체크")
 
     # ================================================================
     # 데이터 수집
@@ -1349,10 +1463,11 @@ class TruveMacro:
     # ================================================================
 
     async def run(self, account: dict, show_id: int,
-                  schedule_id: int = None, applicant: dict = None) -> tuple:
+                  schedule_id: int = None, applicant: dict = None,
+                  keep_browser: bool = False) -> tuple:
         """
-        전체 예매 플로우 실행
-        화면에서 브라우저가 열리고 모든 동작이 보임
+        전체 예매 플로우 실행.
+        keep_browser=True 이면 실행 후 브라우저를 닫지 않음 (재시도 시 창 유지).
         """
         flow_start = time.time()
 
@@ -1368,7 +1483,6 @@ class TruveMacro:
         print(f"  Truve 매크로 실행")
         print(f"  Level {self.level}: {self.cfg['name']}")
         print(f"  {self.cfg['description']}")
-        # [Rule 4] 크리덴셜 마스킹
         print(f"  계정: {mask_email(account['email'])}")
         print(f"  대상: {self.base_url}/shows/{show_id}")
         bk = self.booking
@@ -1379,50 +1493,31 @@ class TruveMacro:
         print(f"{'='*60}")
 
         try:
-            await self.setup()
+            # 브라우저가 아직 안 열려있으면 setup
+            if not self.browser:
+                await self.setup()
 
             # ── 실제 API 흐름 순서 ──
-            # login → show/schedule 선택 → captcha → queue(enter→poll)
-            # → ticketing/enter(세션진입) → seat(선점/재시도)
-            # → booking(예매생성) → payment-ready(결제준비)
-            # → Toss 결제(카드/무통장)
+            # login → show/schedule → captcha → queue → session/seat → booking → payment → toss
 
-            # Step 1: 로그인 완료 상태
             await self.step1_login(account["email"], account["password"])
-
-            # 핑거프린트 수집
             await self._collect_fingerprint()
-
-            # Step 2: 공연 상세 → 날짜/회차 선택
             await self.step2_select_show(show_id)
-
-            # Step 3: 예매하기 클릭 → 캡차 통과
             await self.step3_captcha()
 
-            # Step 4: 대기열 진입 → 폴링 → 입장 토큰 획득
             queue_ok = await self.step4_queue(show_id)
 
             if queue_ok:
-                # Step 5: 세션 진입 → 좌석 선점/재시도
                 seats_ok = await self.step5_select_seats(show_id)
 
                 if seats_ok:
-                    # Step 6: Booking 생성 + 결제 페이지 이동
                     await self.step6_to_payment()
-
-                    # Step 7: Payment-ready + 예약자 정보 입력 + 결제 요청
                     await self.step7_payment(applicant)
 
-                    # Step 8: Toss SDK 내부 (카드사/은행/소득공제)
-                    # → step7 내부에서 자동 호출됨
-
-            # 텔레메트리 수집
             await self._collect_telemetry()
-
             print(f"\n  [완료] 매크로 플로우 종료")
 
         except Exception as e:
-            # [Rule 4] traceback 미노출 - 에러 유형만 기록
             print(f"\n  [에러] {type(e).__name__}: {e}")
 
         finally:
@@ -1432,11 +1527,12 @@ class TruveMacro:
             self._fe.time_on_page_ms = elapsed
             self._be.user_agent = self.cfg.get("user_agent", "Chromium")
 
-            # 키보드 데이터
             if self.keyboard:
                 paste_count = sum(1 for k in self.keyboard.keystroke_log if k.get("type") == "paste")
                 self._fe.paste_event_count = paste_count
 
-            await self.teardown()
+            # keep_browser=True 면 브라우저 유지 (재시도 시 같은 창 사용)
+            if not keep_browser:
+                await self.teardown()
 
         return self._be, self._fe
