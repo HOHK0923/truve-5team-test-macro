@@ -64,7 +64,10 @@ class BEDataRecord:
 
     # 메타
     run_id: str = ""
-    bot_profile: str = ""
+    bot_profile: str = ""  # level_N
+    level: int = 0
+    scenario: str = ""     # bot / stealth / manual
+    tag: str = ""          # 커스텀 태그
     is_bot: int = 1
     timestamp: str = ""
 
@@ -126,6 +129,9 @@ class FEDataRecord:
     # 메타
     run_id: str = ""
     bot_profile: str = ""
+    level: int = 0
+    scenario: str = ""
+    tag: str = ""
     is_bot: int = 1
     timestamp: str = ""
 

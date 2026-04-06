@@ -112,7 +112,8 @@ def parse_level_arg(level_str: str) -> list[int]:
 async def run_macro(base_url: str, level: int, runs: int,
                     accounts: list, show_id: int, schedule_id: int,
                     applicant: dict, booking_options: dict,
-                    data_logger: DataLogger, level_overrides: dict = None):
+                    data_logger: DataLogger, level_overrides: dict = None,
+                    scenario_name: str = "", tag_name: str = ""):
     """단일 레벨로 매크로 실행"""
     cfg = BOT_LEVELS[level]
 
@@ -129,7 +130,9 @@ async def run_macro(base_url: str, level: int, runs: int,
         # 매 run마다 새 매크로 인스턴스 (깨끗한 상태)
         macro = TruveMacro(base_url, level, data_logger,
                            booking_options=booking_options,
-                           level_overrides=level_overrides)
+                           level_overrides=level_overrides,
+                           scenario=scenario_name,
+                           tag=tag_name)
 
         try:
             be_record, fe_record = await macro.run(
@@ -202,20 +205,27 @@ async def async_main(args):
         sys.exit(1)
 
     # 시나리오 프리셋 적용
-    level_overrides = None
+    level_overrides = {}
     if args.scenario:
         sc = SCENARIOS[args.scenario]
         print(f"\n  [시나리오] {sc['name']}: {sc['description']}")
         levels = sc["levels"]
-        if args.runs == 1:  # 사용자가 명시 안 했으면 프리셋 값 사용
+        if args.runs == 1:
             runs = sc["runs_per_level"]
         else:
             runs = args.runs
-        level_overrides = sc.get("overrides")
+        level_overrides = sc.get("overrides") or {}
     else:
         runs = args.runs
 
+    # CLI --retry 오버라이드
+    if args.retry is not None:
+        level_overrides["retry_count"] = args.retry
+
     total_start = time.time()
+
+    scenario_name = args.scenario or "manual"
+    tag_name = args.tag or ""
 
     for level in levels:
         await run_macro(
@@ -229,6 +239,8 @@ async def async_main(args):
             booking_options=booking_options,
             data_logger=data_logger,
             level_overrides=level_overrides,
+            scenario_name=scenario_name,
+            tag_name=tag_name,
         )
 
     total_elapsed = time.time() - total_start
@@ -272,6 +284,8 @@ def main():
     parser.add_argument("--applicant-phone", default="01012345678", help="예약자 전화번호")
     parser.add_argument("--output", default="./output", help="출력 디렉토리")
     parser.add_argument("--info", action="store_true", help="레벨 비교표 출력 후 종료")
+    parser.add_argument("--retry", type=int, default=None, help="실패 시 재시도 횟수 (미지정시 레벨 기본값)")
+    parser.add_argument("--tag", default=None, help="데이터에 붙일 커스텀 태그 (예: test-01, batch-a)")
 
     # ── 예매 부가 설정 ──
     booking_group = parser.add_argument_group("예매 부가 설정")
@@ -355,6 +369,10 @@ def main():
         print(f"  회차: any (랜덤 날짜/시간)")
     else:
         print(f"  날짜: {args.schedule_date} {args.schedule_time}")
+    if args.retry is not None:
+        print(f"  재시도: {args.retry}회")
+    if args.tag:
+        print(f"  태그: {args.tag}")
 
     # [Rule 2] 비밀번호 CLI 전달 시 경고
     if args.password:

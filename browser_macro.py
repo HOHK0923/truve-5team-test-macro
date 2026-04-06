@@ -169,12 +169,15 @@ class TruveMacro:
     """
 
     def __init__(self, base_url: str, level: int, logger: DataLogger,
-                 booking_options: dict = None, level_overrides: dict = None):
+                 booking_options: dict = None, level_overrides: dict = None,
+                 scenario: str = "", tag: str = ""):
         if not PLAYWRIGHT_AVAILABLE:
             raise RuntimeError("pip install playwright && playwright install chromium")
 
         self.base_url = base_url.rstrip("/")
         self.level = level
+        self.scenario = scenario
+        self.tag = tag
         # 레벨 설정 복사 후 오버라이드 적용 (stealth 시나리오용)
         self.cfg = dict(BOT_LEVELS[level])
         if level_overrides:
@@ -198,8 +201,14 @@ class TruveMacro:
         self.mouse: MouseController = None
         self.keyboard: KeyboardController = None
 
-        self._be = BEDataRecord(run_id=self.run_id, bot_profile=f"level_{level}")
-        self._fe = FEDataRecord(run_id=self.run_id, bot_profile=f"level_{level}")
+        self._be = BEDataRecord(
+            run_id=self.run_id, bot_profile=f"level_{level}",
+            level=level, scenario=scenario, tag=tag,
+        )
+        self._fe = FEDataRecord(
+            run_id=self.run_id, bot_profile=f"level_{level}",
+            level=level, scenario=scenario, tag=tag,
+        )
         self._last_action = 0.0
 
     # ================================================================

@@ -155,12 +155,26 @@ python main.py --level 1 --pay-method VIRTUAL_ACCOUNT --bank 신한 --cash-recei
 python main.py --level 5 --pay-method VIRTUAL_ACCOUNT --bank 카카오뱅크 --cash-receipt 지출증빙
 ```
 
+### 재시도/태그
+
+```bash
+# 재시도 20회로 설정
+python main.py --level 1 --retry 20
+
+# 태그 붙이기 (출력 데이터에 기록됨)
+python main.py --scenario bot --tag "batch-001"
+python main.py --scenario stealth --tag "test-vip" --seat-grade VIP
+```
+
 ### 풀 옵션
 
 ```bash
 python main.py \
-  --level 5 \
+  --scenario bot \
+  --level 1 \
   --runs 3 \
+  --retry 15 \
+  --tag "vip-test-01" \
   --show-id 2 \
   --seat-grade VIP \
   --seat-section 1F-B \
@@ -183,8 +197,11 @@ python main.py \
 
 | 옵션 | 설명 | 기본값 |
 |------|------|-------|
+| `--scenario` | 시나리오 프리셋 (`bot`, `stealth`) | 없음 (수동) |
 | `--level` | 봇 레벨 (1~10, `all`, `1-5`) | `1` |
 | `--runs` | 레벨당 반복 횟수 (1~100) | `1` |
+| `--retry` | 실패 시 재시도 횟수 | 레벨 기본값 |
+| `--tag` | 데이터에 붙일 커스텀 태그 | 없음 |
 | `--url` | 대상 프론트엔드 URL | `.env` 값 |
 | `--show-id` | 대상 공연 ID | `1` |
 | `--schedule-id` | 대상 회차 ID | `1` |
@@ -279,7 +296,13 @@ python main.py \
 | `fe_rawdata_*.csv` | FE 모델 학습 (마우스, 키보드, 스크롤, 브라우저 핑거프린트 등) |
 | `combined_rawdata_*.json` | 통합 데이터 (BE + FE + 요청 로그) |
 
-라벨: `is_bot=1` (봇), `bot_profile=level_N` 으로 구분
+라벨 컬럼:
+- `is_bot=1` (봇)
+- `level`: 봇 레벨 (1~10)
+- `scenario`: bot / stealth / manual
+- `tag`: 커스텀 태그 (`--tag`로 지정)
+- `bot_profile`: `level_N` 형식
+
 사람 데이터(`is_bot=0`)는 실제 사용자 로그에서 별도 수집 필요
 
 ---
