@@ -1266,18 +1266,42 @@ class TruveMacro:
         return False
 
     async def _toss_click_text(self, toss, text: str, label: str):
-        """Toss SDK 안에서 텍스트로 요소 클릭. 여러 방법 시도."""
-        # 방법 1: Playwright 텍스트 셀렉터
+        """
+        Toss SDK 안에서 텍스트로 요소 클릭.
+        사람처럼 마우스로 이동 → 클릭 (가능하면).
+        """
+        # 방법 1: 텍스트로 찾아서 마우스 클릭 (사람처럼)
+        try:
+            btn = await toss.query_selector(f'text={text}')
+            if btn and await btn.is_visible():
+                box = await btn.bounding_box()
+                if box:
+                    # 마우스로 이동 후 클릭 (사람처럼)
+                    await self.mouse.click_at(
+                        box["x"] + box["width"] / 2,
+                        box["y"] + box["height"] / 2,
+                    )
+                    await asyncio.sleep(0.3)
+                    print(f"      -> {label} 완료 (마우스)")
+                    return True
+                else:
+                    await btn.click(force=True)
+                    print(f"      -> {label} 완료")
+                    return True
+        except Exception:
+            pass
+
+        # 방법 2: force 클릭
         try:
             btn = await toss.query_selector(f'text={text}')
             if btn:
                 await btn.click(force=True)
-                print(f"      -> {label} 완료")
+                print(f"      -> {label} 완료 (force)")
                 return True
         except Exception:
             pass
 
-        # 방법 2: JS로 텍스트 매칭 후 클릭
+        # 방법 3: JS 텍스트 매칭
         try:
             clicked = await toss.evaluate(f"""() => {{
                 const walker = document.createTreeWalker(
@@ -1297,7 +1321,6 @@ class TruveMacro:
         except Exception:
             pass
 
-        print(f"      [!] {label} 실패")
         return False
 
     async def _toss_virtual_account(self, toss, applicant: dict):
@@ -1657,9 +1680,29 @@ class TruveMacro:
             if queue_ok:
                 seats_ok = await self.step5_select_seats(show_id)
 
-                if seats_ok:
-                    await self.step6_to_payment()
-                    await self.step7_payment(applicant)
+                if not seats_ok:
+                    print(f"\n  [!] 좌석 선택 실패 — 결제 진행 불가, 플로우 중단")
+                else:
+                    # 좌석 패널에 실제로 선택된 좌석이 있는지 확인
+                    has_selected = await self.page.evaluate("""() => {
+                        const text = document.body.innerText || '';
+                        // "선택 좌석 N / 4" 또는 결제 금액이 0이 아닌지 확인
+                        const match = text.match(/선택\\s*좌석\\s*(\\d+)/);
+                        if (match && parseInt(match[1]) > 0) return true;
+                        // "원 결제하기" 버튼에 금액이 있는지
+                        const payBtn = text.match(/(\\d[\\d,]+)원\\s*결제/);
+                        if (payBtn && parseInt(payBtn[1].replace(/,/g,'')) > 0) return true;
+                        return false;
+                    }""")
+
+                    if not has_selected:
+                        print(f"\n  [!] 좌석 선점 확인 실패 (선택 좌석 0석) — 재시도")
+                        # 한번 더 좌석 선택 시도
+                        seats_ok = await self.step5_select_seats(show_id)
+
+                    if seats_ok:
+                        await self.step6_to_payment()
+                        await self.step7_payment(applicant)
 
             await self._collect_telemetry()
             print(f"\n  [완료] 매크로 플로우 종료")
