@@ -337,7 +337,7 @@ class TruveMacro:
         - input name="password", placeholder="비밀번호 입력하기"
         - button type="submit" text="로그인"
         """
-        print(f"\n  [Step 1/7] 로그인")
+        print(f"\n  [Step 1/8] 로그인")
         self._be.api_call_sequence.append("signin")
 
         await self.page.goto(f"{self.base_url}/signin", wait_until="networkidle")
@@ -367,7 +367,7 @@ class TruveMacro:
         self._be.login_method = "email"
 
     # ================================================================
-    # Step 2: 공연 목록 → 공연 선택
+    # Step 2: 공연 상세 → 날짜/회차 선택
     # ================================================================
 
     async def step2_select_show(self, show_id: int):
@@ -375,8 +375,9 @@ class TruveMacro:
         공연 상세 페이지로 이동 + 회차(날짜/시간) 선택
         - /shows/{showId}
         - 캘린더에서 날짜 선택 → 회차 시간 선택
+        - schedule_date/schedule_time = None → any (랜덤/첫 번째 가용)
         """
-        print(f"\n  [Step 2/7] 공연 페이지 이동 (showId={show_id})")
+        print(f"\n  [Step 2/8] 공연 페이지 이동 (showId={show_id})")
         self._be.api_call_sequence.append("show_detail")
 
         await self.page.goto(
@@ -393,36 +394,49 @@ class TruveMacro:
 
         # ── 회차 날짜 선택 ──
         target_date = self.booking.get("schedule_date")
-        if target_date:
-            # 캘린더에서 특정 날짜 클릭 (YYYY-MM-DD → DD)
-            day = str(int(target_date.split("-")[2]))  # "07" → "7"
+        if target_date and target_date.lower() != "any":
+            # 특정 날짜 클릭 (YYYY-MM-DD → DD)
+            day = str(int(target_date.split("-")[2]))
             print(f"      날짜 선택: {target_date}")
             try:
-                # React Day Picker 날짜 버튼 클릭
                 date_btn = await self.page.query_selector(
                     f'button[name="day"]:has-text("{day}")'
                 )
                 if date_btn:
                     box = await date_btn.bounding_box()
                     if box:
-                        await self.mouse.click_at(
-                            box["x"] + box["width"] / 2,
-                            box["y"] + box["height"] / 2,
-                        )
+                        await self.mouse.click_at(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
                         await asyncio.sleep(0.5)
                 else:
-                    print(f"      [!] 날짜 {day}일 버튼을 찾을 수 없음, 기본 선택")
+                    print(f"      [!] 날짜 {day}일 못찾음, 기본 유지")
             except Exception:
-                print(f"      [!] 날짜 선택 실패, 기본 선택 유지")
+                print(f"      [!] 날짜 선택 실패, 기본 유지")
+        else:
+            # any: 예매 가능한 날짜 중 랜덤 선택
+            print(f"      날짜: any (가용 날짜 랜덤 선택)")
+            try:
+                avail_days = await self.page.query_selector_all(
+                    'button[name="day"]:not([disabled])'
+                )
+                if avail_days:
+                    pick = random.choice(avail_days)
+                    box = await pick.bounding_box()
+                    if box:
+                        await self.mouse.click_at(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
+                        await asyncio.sleep(0.5)
+                    picked_text = await pick.text_content()
+                    print(f"      -> {picked_text}일 선택")
+            except Exception:
+                print(f"      [!] 날짜 랜덤 선택 실패, 기본 유지")
 
         await self._delay()
 
         # ── 회차 시간 선택 ──
         target_time = self.booking.get("schedule_time")
-        if target_time:
+        if target_time and target_time.lower() != "any":
+            # 특정 시간 선택
             print(f"      회차 시간 선택: {target_time}")
             try:
-                # 회차 리스트에서 시간 매칭
                 time_btn = await self.page.query_selector(
                     f'button:has-text("{target_time}"), '
                     f'[class*="schedule"]:has-text("{target_time}")'
@@ -430,15 +444,30 @@ class TruveMacro:
                 if time_btn:
                     box = await time_btn.bounding_box()
                     if box:
-                        await self.mouse.click_at(
-                            box["x"] + box["width"] / 2,
-                            box["y"] + box["height"] / 2,
-                        )
+                        await self.mouse.click_at(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
                         await asyncio.sleep(0.5)
                 else:
-                    print(f"      [!] {target_time} 회차를 찾을 수 없음, 첫 번째 회차 선택")
+                    print(f"      [!] {target_time} 회차 못찾음, 첫 번째 선택")
             except Exception:
-                print(f"      [!] 회차 선택 실패, 기본 선택 유지")
+                print(f"      [!] 회차 선택 실패, 기본 유지")
+        else:
+            # any: 예매 가능한 회차 중 랜덤 선택
+            print(f"      회차: any (가용 회차 랜덤 선택)")
+            try:
+                schedule_btns = await self.page.query_selector_all(
+                    '[class*="schedule"] button:not([disabled]), '
+                    'button[class*="schedule"]:not([disabled])'
+                )
+                if schedule_btns:
+                    pick = random.choice(schedule_btns)
+                    box = await pick.bounding_box()
+                    if box:
+                        await self.mouse.click_at(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
+                        await asyncio.sleep(0.5)
+                    picked_text = await pick.text_content()
+                    print(f"      -> {picked_text} 회차 선택")
+            except Exception:
+                print(f"      [!] 회차 랜덤 선택 실패, 기본 유지")
 
         print(f"      -> 공연 페이지 로딩 완료")
 
@@ -452,7 +481,7 @@ class TruveMacro:
         - 예매하기 버튼: bg-red-500, text="예매하기"
         - 캡차: 3x2 그리드, 타일 클릭 후 "시작하기"
         """
-        print(f"\n  [Step 3/7] 예매하기 + 캡차")
+        print(f"\n  [Step 3/8] 예매하기 + 캡차")
         self._be.api_call_sequence.append("captcha")
 
         await self._delay()
@@ -509,7 +538,7 @@ class TruveMacro:
         - 순위 표시: text-5xl font-extrabold text-red-500
         - 자동으로 /shows/{showId}/seat 으로 리다이렉트됨
         """
-        print(f"\n  [Step 4/7] 대기열 대기")
+        print(f"\n  [Step 4/8] 대기열 대기")
         self._be.api_call_sequence.append("queue")
 
         max_wait = 300  # 최대 5분
@@ -569,7 +598,7 @@ class TruveMacro:
         PixiJS Canvas는 DOM 요소가 아니므로 Canvas 좌표로 클릭해야 함.
         좌석 정보는 API 응답에서 가져와서 Canvas 위의 좌표를 계산.
         """
-        print(f"\n  [Step 5/7] 좌석 선택")
+        print(f"\n  [Step 5/8] 좌석 선점")
         self._be.api_call_sequence.append("seat_select")
 
         # 좌석 페이지가 아니면 이동
@@ -749,7 +778,7 @@ class TruveMacro:
         결제하기 버튼 클릭 → /payments 페이지 이동
         - 버튼 텍스트: "N원 결제하기"
         """
-        print(f"\n  [Step 6/7] 결제 페이지 이동")
+        print(f"\n  [Step 6/8] Booking 생성 + 결제 페이지 이동")
         self._be.api_call_sequence.append("to_payment")
 
         await self._delay()
@@ -801,7 +830,7 @@ class TruveMacro:
             - "총 N원 결제하기" (bg-[#F93E4B])
             - 제한시간: 7분 카운트다운
         """
-        print(f"\n  [Step 7/7] 예약자 정보 입력 + 결제")
+        print(f"\n  [Step 7/8] Payment-ready + 예약자 정보 입력")
         self._be.api_call_sequence.append("payment")
 
         # ── 1. 예약자 정보 입력 ──
@@ -1296,31 +1325,40 @@ class TruveMacro:
         try:
             await self.setup()
 
-            # Step 1: 로그인
+            # ── 실제 API 흐름 순서 ──
+            # login → show/schedule 선택 → captcha → queue(enter→poll)
+            # → ticketing/enter(세션진입) → seat(선점/재시도)
+            # → booking(예매생성) → payment-ready(결제준비)
+            # → Toss 결제(카드/무통장)
+
+            # Step 1: 로그인 완료 상태
             await self.step1_login(account["email"], account["password"])
 
             # 핑거프린트 수집
             await self._collect_fingerprint()
 
-            # Step 2: 공연 선택
+            # Step 2: 공연 상세 → 날짜/회차 선택
             await self.step2_select_show(show_id)
 
-            # Step 3: 예매하기 + 캡차
+            # Step 3: 예매하기 클릭 → 캡차 통과
             await self.step3_captcha()
 
-            # Step 4: 대기열
+            # Step 4: 대기열 진입 → 폴링 → 입장 토큰 획득
             queue_ok = await self.step4_queue(show_id)
 
             if queue_ok:
-                # Step 5: 좌석 선택
+                # Step 5: 세션 진입 → 좌석 선점/재시도
                 seats_ok = await self.step5_select_seats(show_id)
 
                 if seats_ok:
-                    # Step 6: 결제 페이지 이동
+                    # Step 6: Booking 생성 + 결제 페이지 이동
                     await self.step6_to_payment()
 
-                    # Step 7: 예약자 정보 + 결제 (→ Toss SDK까지)
+                    # Step 7: Payment-ready + 예약자 정보 입력 + 결제 요청
                     await self.step7_payment(applicant)
+
+                    # Step 8: Toss SDK 내부 (카드사/은행/소득공제)
+                    # → step7 내부에서 자동 호출됨
 
             # 텔레메트리 수집
             await self._collect_telemetry()

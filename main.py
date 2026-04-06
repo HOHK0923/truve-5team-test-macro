@@ -288,12 +288,12 @@ def main():
         help="현금영수증 유형 (무통장 입금 시)",
     )
     booking_group.add_argument(
-        "--schedule-date", default=None,
-        help="회차 날짜 YYYY-MM-DD (미지정시 첫 번째 가용)",
+        "--schedule-date", default="any",
+        help="회차 날짜 (YYYY-MM-DD 또는 any=랜덤)",
     )
     booking_group.add_argument(
-        "--schedule-time", default=None,
-        help="회차 시간 HH:MM (미지정시 첫 번째 가용)",
+        "--schedule-time", default="any",
+        help="회차 시간 (HH:MM 또는 any=랜덤)",
     )
 
     args = parser.parse_args()
@@ -329,8 +329,10 @@ def main():
         print(f"  결제: 카드 ({args.card_company})")
     else:
         print(f"  결제: 무통장 ({args.bank}) / 현금영수증: {args.cash_receipt}")
-    if args.schedule_date:
-        print(f"  날짜: {args.schedule_date} {args.schedule_time or '(첫 회차)'}")
+    if args.schedule_date.lower() == "any":
+        print(f"  회차: any (랜덤 날짜/시간)")
+    else:
+        print(f"  날짜: {args.schedule_date} {args.schedule_time}")
 
     # [Rule 2] 비밀번호 CLI 전달 시 경고
     if args.password:

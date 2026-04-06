@@ -647,15 +647,15 @@ def build_booking_options(
             f"잘못된 결제 방식: {pay_method} (허용: {', '.join(VALID_PAY_METHODS)})"
         )
 
-    # 날짜 형식 검증 (YYYY-MM-DD)
-    if schedule_date:
+    # 날짜 형식 검증 (YYYY-MM-DD 또는 "any")
+    if schedule_date and schedule_date.lower() != "any":
         if not re.match(r"^\d{4}-\d{2}-\d{2}$", schedule_date):
-            raise ValueError(f"잘못된 날짜 형식: {schedule_date} (YYYY-MM-DD)")
+            raise ValueError(f"잘못된 날짜 형식: {schedule_date} (YYYY-MM-DD 또는 any)")
 
-    # 시간 형식 검증 (HH:MM)
-    if schedule_time:
+    # 시간 형식 검증 (HH:MM 또는 "any")
+    if schedule_time and schedule_time.lower() != "any":
         if not re.match(r"^\d{2}:\d{2}$", schedule_time):
-            raise ValueError(f"잘못된 시간 형식: {schedule_time} (HH:MM)")
+            raise ValueError(f"잘못된 시간 형식: {schedule_time} (HH:MM 또는 any)")
 
     # 은행 검증 (무통장 입금 시)
     if pay_method == "VIRTUAL_ACCOUNT" and bank not in VALID_BANKS:

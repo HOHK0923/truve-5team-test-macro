@@ -95,8 +95,14 @@ python main.py --level 1 --seat-grade R --seat-section OP --seat-count 2
 # 2026년 4월 15일 19시 공연
 python main.py --level 3 --schedule-date 2026-04-15 --schedule-time 19:00
 
-# 날짜만 지정 (첫 번째 회차 자동 선택)
+# 날짜만 지정 (회차는 랜덤)
 python main.py --level 1 --schedule-date 2026-04-20
+
+# 전부 랜덤 (기본값)
+python main.py --level 5 --schedule-date any --schedule-time any
+
+# any는 기본값이라 생략 가능
+python main.py --level 5
 ```
 
 ### 카드 결제
@@ -183,8 +189,8 @@ python main.py \
 
 | 옵션 | 형식 | 기본값 |
 |------|------|-------|
-| `--schedule-date` | `YYYY-MM-DD` | 첫 번째 가용 날짜 |
-| `--schedule-time` | `HH:MM` | 첫 번째 가용 회차 |
+| `--schedule-date` | `YYYY-MM-DD` 또는 `any` | `any` (랜덤) |
+| `--schedule-time` | `HH:MM` 또는 `any` | `any` (랜덤) |
 
 ### 결제 설정
 
@@ -202,36 +208,39 @@ python main.py \
 매크로가 실행하는 전체 순서:
 
 ```
-1. 로그인 (/signin)
-   └ 이메일/비밀번호 입력 → 로그인 버튼 클릭
+1. 로그인 완료 (/signin)
+   └ 이메일/비밀번호 입력 → 로그인 버튼
 
-2. 공연 선택 (/shows/{showId})
-   └ 날짜 선택 (--schedule-date) → 회차 선택 (--schedule-time)
+2. 공연 상세 → 날짜/회차 선택 (/shows/{showId})
+   └ 날짜 선택 (--schedule-date, any=랜덤)
+   └ 회차 선택 (--schedule-time, any=랜덤)
 
-3. 예매하기 + 캡차
+3. 예매하기 → 캡차 통과
    └ 예매하기 버튼 → 캡차 타일 선택 → 시작하기
 
-4. 대기열 대기
-   └ 순위 폴링 → READY 시 자동 통과
+4. 대기열 진입 → 폴링 → 입장
+   └ queue/enter → queue/status 폴링 → admissionToken 획득
 
-5. 좌석 선택 (/shows/{showId}/seat) — PixiJS Canvas
-   └ 등급/구역 기반 영역 클릭 (--seat-grade, --seat-section, --seat-count)
+5. 세션 진입 → 좌석 선점/재시도 (/shows/{showId}/seat)
+   └ ticketing/enter (세션 토큰)
+   └ 좌석 배치도 조회 → 등급/구역 기반 좌석 클릭 (PixiJS Canvas)
+   └ ticketing/hold/seat (선점 실패 시 재시도)
 
-6. 결제 페이지 이동 (/payments)
-   └ "결제하기" 버튼 클릭
+6. Booking 생성 + 결제 페이지 이동 (/payments)
+   └ POST /bookings → "결제하기" 버튼
 
-7. 예약자 정보 입력 + 결제 옵션
+7. Payment-ready + 예약자 정보 입력
    ├ 이름/생년월일/이메일/전화번호 입력
-   ├ 수령방법: 현장수령 선택
+   ├ 수령방법: 현장수령
    ├ 결제수단: 카드 또는 무통장 선택
-   ├ 약관 동의 체크 (Lv1~5: 전체동의 / Lv6~10: 개별 체크)
+   ├ 약관 동의 (Lv1~5: 전체 / Lv6~10: 개별)
    └ "총 N원 결제하기" 클릭
 
-8. Toss Payments SDK 내부 처리
+8. Toss Payments SDK 결제 처리
    ├ [카드] 카드사 선택 (--card-company) → 결제
    └ [무통장] 은행 선택 (--bank) → 입금자명 입력
-              → 현금영수증 선택 (--cash-receipt)
-              → 소득공제 시 휴대폰번호 입력 → 결제
+              → 현금영수증 (--cash-receipt: 소득공제/지출증빙/미발행)
+              → 소득공제 시 휴대폰번호 자동 입력 → 결제
 ```
 
 ---
