@@ -773,101 +773,168 @@ class TruveMacro:
 
     async def step7_payment(self, applicant: dict):
         """
-        결제 페이지 (/payments)
-        - input name="name" placeholder="홍길동"
-        - input name="birth" placeholder="19990129"
-        - input name="email" placeholder="XXXX@naver.com"
-        - input name="phone" placeholder="01012345678"
-        - 수령방법: "현장수령" (value="NONE")
-        - 결제수단: "간편 결제 · 카드 결제" (value="CARD")
-        - 동의 체크박스 3개
-        - 결제 버튼: "총 N원 결제하기" (bg-[#F93E4B])
+        결제 페이지 (/payments) 전체 폼 처리
+
+        폼 구조:
+          [예약자 정보]
+            - name (이름): placeholder "홍길동"
+            - birth (생년월일): placeholder "19990129" (8자리)
+            - email (이메일): placeholder "XXXX@naver.com"
+            - phone (전화번호): placeholder "01012345678" (11자리, - 제외)
+
+          [티켓 수령 방법]
+            - "현장수령" (value="NONE") — 현재 유일한 옵션
+
+          [결제수단]
+            - "간편 결제 · 카드 결제" (value="CARD")
+            - "무통장 입금" (value="VIRTUAL_ACCOUNT")
+            ※ 무통장 선택 시 → Toss SDK 내부에서 은행선택/입금자명 처리
+            ※ 소득공제 = Toss SDK 내부 하드코딩 ("소득공제" 자동 적용)
+
+          [약관 동의] — 커스텀 체크마크 (✓)
+            - "이용약관 전체 동의" → 전체 토글
+            - "(필수) 취소 규정 안내" — agrees[0], 필수
+            - "(필수) 티켓 이용정책 동의" — agrees[1], 필수
+            - "개인정보 제 3자 제공 안내" — agrees[2], 선택
+
+          [결제 버튼]
+            - "총 N원 결제하기" (bg-[#F93E4B])
+            - 제한시간: 7분 카운트다운
         """
         print(f"\n  [Step 7/7] 예약자 정보 입력 + 결제")
         self._be.api_call_sequence.append("payment")
 
-        # 예약자 이름
+        # ── 1. 예약자 정보 입력 ──
+        print(f"      [예약자 정보]")
+
+        # 이름
         print(f"      이름: {applicant['name']}")
         await self.keyboard.type_text('input[name="name"]', applicant["name"])
         await self._delay()
 
-        # 생년월일
+        # 생년월일 (8자리)
         print(f"      생년월일: {applicant['birth']}")
         await self.keyboard.type_text('input[name="birth"]', applicant["birth"])
         await self._delay()
 
         # 이메일
-        print(f"      이메일: {applicant['email']}")
+        # [Rule 4] 이메일 마스킹 출력
+        print(f"      이메일: {mask_email(applicant['email'])}")
         await self.keyboard.type_text('input[name="email"]', applicant["email"])
         await self._delay()
 
-        # 전화번호
+        # 전화번호 (11자리, - 제외)
         print(f"      전화번호: {applicant['phone']}")
         await self.keyboard.type_text('input[name="phone"]', applicant["phone"])
         await self._delay()
 
+        # 사람 시뮬: 입력 후 스크롤
         if self.level >= 7:
             await self._scroll()
 
-        # 수령방법 선택 (현장수령)
+        # ── 2. 티켓 수령 방법 ──
+        print(f"      [수령방법] 현장수령")
         try:
-            await self._click_selector(
-                'text=현장수령',
-                "현장수령 선택"
-            )
+            await self._click_selector('text=현장수령', "현장수령 선택")
         except Exception:
             pass
         await self._delay()
 
-        # 결제수단 선택 (booking_options 반영)
+        # ── 3. 결제수단 선택 ──
         pay_method = self.booking.get("pay_method", "CARD")
         if pay_method == "CARD":
             pay_label = "간편 결제"
-        else:  # VIRTUAL_ACCOUNT
+            pay_desc = "카드/간편결제"
+        else:
             pay_label = "무통장 입금"
+            pay_desc = "무통장 입금 (은행선택/소득공제는 Toss에서 처리)"
 
-        print(f"      결제수단: {pay_label}")
+        print(f"      [결제수단] {pay_desc}")
         try:
-            await self._click_selector(
-                f'text={pay_label}',
-                f"{pay_label} 선택"
-            )
+            await self._click_selector(f'text={pay_label}', f"{pay_label} 선택")
         except Exception:
             pass
         await self._delay()
 
-        # 전체 동의 체크
-        try:
-            await self._click_selector(
-                'text=전체 동의',
-                "전체 동의 체크"
-            )
-        except Exception:
-            # 개별 동의
-            checkboxes = await self.page.query_selector_all('input[type="checkbox"]')
-            for cb in checkboxes:
-                box = await cb.bounding_box()
-                if box:
-                    await self.mouse.click_at(box["x"] + 10, box["y"] + 10)
-                    await asyncio.sleep(0.3)
+        # 사람 시뮬: 결제수단 선택 후 스크롤
+        if self.level >= 6:
+            await self._scroll()
+
+        # ── 4. 약관 동의 (3개 개별 체크) ──
+        print(f"      [약관 동의]")
+
+        # 방법 1: "전체 동의" 클릭으로 한번에 처리 (봇 레벨 1~5)
+        if self.level <= 5:
+            try:
+                await self._click_selector('text=전체 동의', "전체 동의 (일괄)")
+                print(f"      -> 전체 동의 체크 완료")
+            except Exception:
+                # 실패 시 개별 체크로 폴백
+                await self._check_agreements_individually()
+        else:
+            # 방법 2: 사람처럼 개별 체크 (레벨 6~10)
+            await self._check_agreements_individually()
+
         await self._delay()
+
+        # ── 5. 결제 전 최종 확인 ──
 
         # Level 10: 결제 전 망설임
         if self.cfg.get("random_hesitation") and random.random() < 0.2:
-            print(f"      (Lv10: 결제 전 2초 망설임)")
-            await asyncio.sleep(2)
+            hesitate = random.uniform(1.5, 4.0)
+            print(f"      (Lv10: 결제 전 {hesitate:.1f}초 망설임)")
+            await asyncio.sleep(hesitate)
 
-        # 결제 버튼 클릭
+        # Level 8+: 금액 확인하듯 스크롤
+        if self.level >= 8:
+            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+
+        # ── 6. 최종 결제 버튼 클릭 ──
+        print(f"      [결제] 최종 결제 버튼 클릭")
         try:
+            # "총 N원 결제하기" 버튼 (bg-[#F93E4B])
             await self._click_selector(
                 'button:has-text("결제하기")',
                 "최종 결제 버튼"
             )
         except Exception as e:
-            print(f"      [!] 결제 버튼 클릭 실패: {e}")
+            print(f"      [!] 결제 버튼 클릭 실패: {type(e).__name__}")
 
-        await asyncio.sleep(2)
-        print(f"      -> 결제 요청 완료 (Toss Payments로 이동)")
+        # Toss Payments 모달 로딩 대기
+        # - CARD: Toss 카드/간편결제 통합 창
+        # - VIRTUAL_ACCOUNT: Toss 가상계좌 발급 창
+        #   → 은행 선택, 입금자명 입력은 Toss SDK 내부에서 처리
+        #   → 소득공제 = "소득공제" 자동 적용 (하드코딩)
+        #   → 유효시간: 24시간
+        await asyncio.sleep(3)
+
+        if pay_method == "VIRTUAL_ACCOUNT":
+            print(f"      -> Toss 무통장 입금 창 (은행선택/입금자명/소득공제 = Toss 내부)")
+        else:
+            print(f"      -> Toss 카드/간편결제 창 열림")
+
+        print(f"      -> 결제 요청 완료")
+
+    async def _check_agreements_individually(self):
+        """약관 3개 개별 체크 (사람처럼 하나씩)"""
+        agreement_labels = [
+            ("취소 규정", "(필수) 취소 규정"),
+            ("티켓 이용정책", "(필수) 티켓 이용정책"),
+            ("개인정보", "개인정보 제 3자 제공"),
+        ]
+
+        for label_short, label_text in agreement_labels:
+            try:
+                await self._click_selector(
+                    f'text={label_text}',
+                    f"{label_short} 동의"
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(random.uniform(0.2, 0.8))
+
+        print(f"      -> 약관 개별 동의 완료 (3/3)")
 
     # ================================================================
     # 데이터 수집
