@@ -270,8 +270,8 @@ def main():
   python main.py --info
         """,
     )
-    parser.add_argument("--scenario", default=None, choices=["bot", "stealth"],
-                        help="시나리오 프리셋 (bot=데이터수집, stealth=실전매크로)")
+    parser.add_argument("--scenario", default=None, choices=["bot", "turbo", "stealth"],
+                        help="시나리오 (bot=데이터수집, turbo=초고속봇, stealth=실전매크로)")
     parser.add_argument("--level", default="1", help="봇 레벨 (1~10, 'all', '1-5')")
     parser.add_argument("--runs", type=int, default=1, help="레벨당 반복 횟수 (1~100)")
     parser.add_argument("--url", default=BASE_URL, help="대상 URL")

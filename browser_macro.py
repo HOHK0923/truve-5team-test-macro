@@ -818,56 +818,72 @@ class TruveMacro:
             print(f"      PixiJS Canvas 감지 → Canvas 좌표 클릭")
             return await self._select_seats_canvas(max_seats)
 
-        # ── DOM 기반 좌석 선택 ──
-        selected = await self.page.evaluate(f"""(maxSeats) => {{
-            // 좌석 후보 셀렉터 (여러 패턴 시도)
-            const seatSelectors = [
-                'circle[fill]:not([fill="#aaaaaa"]):not([fill="#f1f1f4"]):not([fill="rgb(170, 170, 170)"])',
-                '[data-status="available"]',
-                '[class*="seat"]:not([class*="reserved"]):not([class*="unavailable"]):not([class*="sold"])',
-                'g[cursor="pointer"]',
-                'circle[cursor="pointer"]',
-            ];
+        # ── DOM 기반 좌석 선택 (최대 3회 재시도) ──
+        max_attempts = self.cfg.get("max_seat_attempts", 5)
+        for attempt in range(max_attempts):
+            selected = await self.page.evaluate(f"""(maxSeats) => {{
+                // 좌석 후보 셀렉터
+                const seatSelectors = [
+                    'circle[fill]:not([fill="#aaaaaa"]):not([fill="#f1f1f4"]):not([fill="rgb(170,170,170)"])',
+                    '[data-status="available"]',
+                    '[class*="seat"]:not([class*="reserved"]):not([class*="unavailable"]):not([class*="sold"])',
+                    'g[cursor="pointer"] circle',
+                    'circle[cursor="pointer"]',
+                    'g[style*="cursor: pointer"] circle',
+                ];
 
-            let seats = [];
-            for (const sel of seatSelectors) {{
-                const found = document.querySelectorAll(sel);
-                if (found.length > 0) {{
-                    seats = [...found];
-                    break;
+                let seats = [];
+                for (const sel of seatSelectors) {{
+                    const found = document.querySelectorAll(sel);
+                    if (found.length > 0) {{
+                        seats = [...found];
+                        break;
+                    }}
                 }}
-            }}
 
-            if (seats.length === 0) {{
-                // 최종 폴백: 모든 circle/rect 중 색상이 있는 것
-                const allCircles = document.querySelectorAll('circle, rect');
-                seats = [...allCircles].filter(el => {{
-                    const fill = el.getAttribute('fill') || '';
-                    // 회색/비활성 제외
-                    return fill && !fill.includes('aaa') && !fill.includes('f1f1')
-                           && fill !== 'none' && fill !== '#ffffff';
-                }});
-            }}
+                if (seats.length === 0) {{
+                    // 폴백: circle 중 회색 아닌 것
+                    const all = document.querySelectorAll('circle, rect');
+                    seats = [...all].filter(el => {{
+                        const fill = (el.getAttribute('fill') || '').toLowerCase();
+                        return fill && fill !== 'none' && fill !== '#ffffff'
+                               && !fill.includes('aaa') && !fill.includes('f1f1');
+                    }});
+                }}
 
-            // 클릭
-            const clicked = [];
-            const toClick = Math.min(maxSeats, seats.length);
-            for (let i = 0; i < toClick; i++) {{
-                seats[i].dispatchEvent(new MouseEvent('click', {{bubbles: true}}));
-                clicked.push(i);
-            }}
-            return clicked.length;
-        }}""", max_seats)
+                if (seats.length === 0) return {{found: 0, clicked: 0}};
 
-        if selected > 0:
-            self._be.seat_hold_attempts = selected
-            self._be.seat_view_to_hold_ms = (time.time() - seat_view_start) * 1000
-            self._be.selected_seat_ids = list(range(selected))
-            print(f"      -> 좌석 {selected}석 선택 완료 (DOM)")
-            return True
+                // 클릭
+                let clicked = 0;
+                const toClick = Math.min(maxSeats, seats.length);
+                for (let i = 0; i < toClick; i++) {{
+                    const seat = seats[i];
+                    // 마우스 이벤트 순서대로 발생 (pointerdown → click)
+                    seat.dispatchEvent(new PointerEvent('pointerdown', {{bubbles:true}}));
+                    seat.dispatchEvent(new PointerEvent('pointerup', {{bubbles:true}}));
+                    seat.dispatchEvent(new MouseEvent('click', {{bubbles:true}}));
+                    clicked++;
+                }}
+                return {{found: seats.length, clicked: clicked}};
+            }}""", max_seats)
 
-        # 폴백: 직접 클릭 시도
-        print(f"      JS 선택 실패, 직접 클릭 시도")
+            found = selected.get("found", 0) if isinstance(selected, dict) else 0
+            clicked = selected.get("clicked", 0) if isinstance(selected, dict) else selected
+
+            if clicked > 0:
+                self._be.seat_hold_attempts = clicked
+                self._be.seat_view_to_hold_ms = (time.time() - seat_view_start) * 1000
+                self._be.selected_seat_ids = list(range(clicked))
+                print(f"      -> 좌석 {clicked}석 선택 완료 (DOM, 가용 {found}석, 시도 {attempt+1}회)")
+                # 선택 패널에 좌석 수 표시되는지 확인
+                await asyncio.sleep(0.5)
+                return True
+
+            print(f"      [!] 좌석 선택 실패 (시도 {attempt+1}/{max_attempts}, 가용 {found}석)")
+            await asyncio.sleep(1)
+
+        # 최종 폴백: 좌표 클릭
+        print(f"      DOM 선택 전부 실패, 좌표 클릭 시도")
         return await self._select_seats_canvas(max_seats)
 
     async def _select_seats_canvas(self, max_seats: int):
@@ -1049,20 +1065,27 @@ class TruveMacro:
         if self.level >= 6:
             await self._scroll()
 
-        # ── 4. 약관 동의 (3개 개별 체크) ──
+        # ── 4. 약관 동의 ──
+        # 무조건 "전체 동의"만 누름 (개별 먼저 누르면 토글 꼬임)
         print(f"      [약관 동의]")
-
-        # 방법 1: "전체 동의" 클릭으로 한번에 처리 (봇 레벨 1~5)
-        if self.level <= 5:
+        try:
+            await self._click_selector('text=전체 동의', "전체 동의")
+            print(f"      -> 전체 동의 체크 완료")
+        except Exception:
+            # 폴백: JS로 전체 동의 클릭
             try:
-                await self._click_selector('text=전체 동의', "전체 동의 (일괄)")
-                print(f"      -> 전체 동의 체크 완료")
+                await self.page.evaluate("""() => {
+                    const els = [...document.querySelectorAll('*')];
+                    const btn = els.find(el =>
+                        el.textContent.includes('전체 동의') &&
+                        el.offsetParent !== null &&
+                        el.textContent.length < 20
+                    );
+                    if (btn) btn.click();
+                }""")
+                print(f"      -> 전체 동의 (JS)")
             except Exception:
-                # 실패 시 개별 체크로 폴백
-                await self._check_agreements_individually()
-        else:
-            # 방법 2: 사람처럼 개별 체크 (레벨 6~10)
-            await self._check_agreements_individually()
+                print(f"      [!] 전체 동의 실패")
 
         await self._delay()
 
@@ -1172,49 +1195,64 @@ class TruveMacro:
     async def _toss_fill_input(self, toss, selectors: list, value: str, label: str):
         """
         Toss SDK iframe/팝업 안에서 input에 값 입력.
-        iframe 안에서는 일반 fill()/type()이 안 먹을 수 있어서 여러 방식 시도.
+        iframe은 keyboard가 frame 레벨이라 page.keyboard 대신 toss에서 직접 처리.
         """
         for sel in selectors:
             try:
                 field = await toss.query_selector(sel)
                 if not field:
                     continue
+                if not await field.is_visible():
+                    continue
 
-                # 방법 1: 클릭 → 전체선택 → 키보드 입력
-                await field.click(force=True)
-                await asyncio.sleep(0.2)
-
-                # 기존 값 삭제
-                await toss.keyboard.press("Control+A") if hasattr(toss, 'keyboard') else None
-                await toss.keyboard.press("Backspace") if hasattr(toss, 'keyboard') else None
+                # 방법 1: focus → 전체삭제 → 한 글자씩 입력
+                await field.focus()
+                await asyncio.sleep(0.1)
+                await field.press("Control+A")
+                await field.press("Backspace")
                 await asyncio.sleep(0.1)
 
-                # 방법 1a: type (한 글자씩)
+                # 한 글자씩 press (type보다 확실)
+                for char in value:
+                    await field.press(char)
+                    await asyncio.sleep(0.02)
+
                 try:
-                    await field.type(value, delay=30)
                     current = await field.input_value()
                     if current and len(current) >= len(value) - 1:
-                        print(f"      -> {label} 입력 완료 (type)")
+                        print(f"      -> {label} 입력 완료 (press)")
                         return True
                 except Exception:
                     pass
 
-                # 방법 2: fill (한번에)
+                # 방법 2: field.type
+                try:
+                    await field.click(force=True)
+                    await field.press("Control+A")
+                    await field.press("Backspace")
+                    await field.type(value, delay=30)
+                    print(f"      -> {label} 입력 완료 (type)")
+                    return True
+                except Exception:
+                    pass
+
+                # 방법 3: fill
                 try:
                     await field.fill(value)
-                    current = await field.input_value()
-                    if current and len(current) >= len(value) - 1:
-                        print(f"      -> {label} 입력 완료 (fill)")
-                        return True
+                    print(f"      -> {label} 입력 완료 (fill)")
+                    return True
                 except Exception:
                     pass
 
-                # 방법 3: JS로 직접 값 설정 + input 이벤트 발생
+                # 방법 4: JS 직접
                 try:
                     await field.evaluate(f"""(el) => {{
-                        el.value = '{value}';
-                        el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        const setter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value'
+                        ).set;
+                        setter.call(el, '{value}');
+                        el.dispatchEvent(new Event('input', {{bubbles:true}}));
+                        el.dispatchEvent(new Event('change', {{bubbles:true}}));
                     }}""")
                     print(f"      -> {label} 입력 완료 (JS)")
                     return True
@@ -1224,7 +1262,7 @@ class TruveMacro:
             except Exception:
                 continue
 
-        print(f"      [!] {label} 입력 실패 (모든 방법 시도)")
+        print(f"      [!] {label} 입력 실패")
         return False
 
     async def _toss_click_text(self, toss, text: str, label: str):
