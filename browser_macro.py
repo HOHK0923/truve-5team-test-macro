@@ -168,7 +168,8 @@ class TruveMacro:
     마우스가 움직이고, 클릭하고, 키보드 입력하는 것이 모두 보임.
     """
 
-    def __init__(self, base_url: str, level: int, logger: DataLogger):
+    def __init__(self, base_url: str, level: int, logger: DataLogger,
+                 booking_options: dict = None):
         if not PLAYWRIGHT_AVAILABLE:
             raise RuntimeError("pip install playwright && playwright install chromium")
 
@@ -177,6 +178,15 @@ class TruveMacro:
         self.cfg = BOT_LEVELS[level]
         self.logger = logger
         self.run_id = str(uuid.uuid4())[:8]
+        # 예매 부가 설정 (좌석 등급/구역/매수, 결제 방식, 회차 날짜/시간)
+        self.booking = booking_options or {
+            "seat_grade": "any",
+            "seat_section": "any",
+            "seat_count": 2,
+            "pay_method": "CARD",
+            "schedule_date": None,
+            "schedule_time": None,
+        }
 
         self._pw = None
         self.browser = None
@@ -362,9 +372,9 @@ class TruveMacro:
 
     async def step2_select_show(self, show_id: int):
         """
-        공연 상세 페이지로 이동
+        공연 상세 페이지로 이동 + 회차(날짜/시간) 선택
         - /shows/{showId}
-        - 공연 정보 확인 후 회차 선택
+        - 캘린더에서 날짜 선택 → 회차 시간 선택
         """
         print(f"\n  [Step 2/7] 공연 페이지 이동 (showId={show_id})")
         self._be.api_call_sequence.append("show_detail")
@@ -380,6 +390,55 @@ class TruveMacro:
             await self._scroll()
             await asyncio.sleep(random.uniform(1, 3))
             await self._scroll()
+
+        # ── 회차 날짜 선택 ──
+        target_date = self.booking.get("schedule_date")
+        if target_date:
+            # 캘린더에서 특정 날짜 클릭 (YYYY-MM-DD → DD)
+            day = str(int(target_date.split("-")[2]))  # "07" → "7"
+            print(f"      날짜 선택: {target_date}")
+            try:
+                # React Day Picker 날짜 버튼 클릭
+                date_btn = await self.page.query_selector(
+                    f'button[name="day"]:has-text("{day}")'
+                )
+                if date_btn:
+                    box = await date_btn.bounding_box()
+                    if box:
+                        await self.mouse.click_at(
+                            box["x"] + box["width"] / 2,
+                            box["y"] + box["height"] / 2,
+                        )
+                        await asyncio.sleep(0.5)
+                else:
+                    print(f"      [!] 날짜 {day}일 버튼을 찾을 수 없음, 기본 선택")
+            except Exception:
+                print(f"      [!] 날짜 선택 실패, 기본 선택 유지")
+
+        await self._delay()
+
+        # ── 회차 시간 선택 ──
+        target_time = self.booking.get("schedule_time")
+        if target_time:
+            print(f"      회차 시간 선택: {target_time}")
+            try:
+                # 회차 리스트에서 시간 매칭
+                time_btn = await self.page.query_selector(
+                    f'button:has-text("{target_time}"), '
+                    f'[class*="schedule"]:has-text("{target_time}")'
+                )
+                if time_btn:
+                    box = await time_btn.bounding_box()
+                    if box:
+                        await self.mouse.click_at(
+                            box["x"] + box["width"] / 2,
+                            box["y"] + box["height"] / 2,
+                        )
+                        await asyncio.sleep(0.5)
+                else:
+                    print(f"      [!] {target_time} 회차를 찾을 수 없음, 첫 번째 회차 선택")
+            except Exception:
+                print(f"      [!] 회차 선택 실패, 기본 선택 유지")
 
         print(f"      -> 공연 페이지 로딩 완료")
 
@@ -555,22 +614,58 @@ class TruveMacro:
         cx, cy = canvas_box["x"], canvas_box["y"]
         cw, ch = canvas_box["width"], canvas_box["height"]
 
-        # 좌석 영역: Canvas 중앙~하단부 (상단은 스테이지)
-        seat_area_top = cy + ch * 0.25
-        seat_area_bottom = cy + ch * 0.85
-        seat_area_left = cx + cw * 0.15
-        seat_area_right = cx + cw * 0.85
+        # ── 좌석 등급/구역별 Canvas 영역 매핑 ──
+        # PixiJS Canvas 좌표 기반 (섹션 레이아웃 추정)
+        #   상단: 스테이지 (0~25%)
+        #   중앙: 1층 좌석 (25~65%)  ← OP, 1F-A/B/C
+        #   하단: 2층 좌석 (65~90%)  ← 2F-A/B/C
+        #   좌→우: A구역(15~40%), B구역(40~60%), C구역(60~85%)
 
-        max_seats = 4
+        SECTION_MAP = {
+            "OP":   (0.30, 0.60, 0.25, 0.35),  # (left%, right%, top%, bottom%)
+            "1F-A": (0.15, 0.38, 0.35, 0.60),
+            "1F-B": (0.38, 0.62, 0.35, 0.60),
+            "1F-C": (0.62, 0.85, 0.35, 0.60),
+            "2F-A": (0.15, 0.38, 0.65, 0.85),
+            "2F-B": (0.38, 0.62, 0.65, 0.85),
+            "2F-C": (0.62, 0.85, 0.65, 0.85),
+        }
+
+        # 등급별 Canvas 영역 (등급 = 가격대 → 위치 추정)
+        GRADE_MAP = {
+            "vip": (0.30, 0.70, 0.25, 0.40),  # VIP: 1층 앞쪽 중앙
+            "r":   (0.20, 0.80, 0.35, 0.50),  # R석: 1층 중앙
+            "s":   (0.15, 0.85, 0.50, 0.65),  # S석: 1층 뒤쪽
+            "a":   (0.15, 0.85, 0.65, 0.85),  # A석: 2층
+        }
+
+        target_section = self.booking.get("seat_section", "any").upper()
+        target_grade = self.booking.get("seat_grade", "any").lower()
+        max_seats = self.booking.get("seat_count", 2)
         strategy = self.cfg["seat_strategy"]
+
+        # 클릭 영역 결정: 구역 > 등급 > 전체
+        if target_section != "ANY" and target_section in SECTION_MAP:
+            l, r, t, b = SECTION_MAP[target_section]
+            print(f"      구역 지정: {target_section}")
+        elif target_grade != "any" and target_grade in GRADE_MAP:
+            l, r, t, b = GRADE_MAP[target_grade]
+            print(f"      등급 지정: {target_grade.upper()}")
+        else:
+            l, r, t, b = 0.15, 0.85, 0.25, 0.85
+            print(f"      구역/등급: 전체 (any)")
+
+        seat_area_left = cx + cw * l
+        seat_area_right = cx + cw * r
+        seat_area_top = cy + ch * t
+        seat_area_bottom = cy + ch * b
+
         selected_count = 0
 
-        print(f"      전략: {strategy}, 최대 {max_seats}석")
+        print(f"      전략: {strategy}, 매수: {max_seats}석")
 
         if strategy in ("first_available", "best_available"):
-            # 좌석 영역에서 순차적으로 클릭
             for i in range(max_seats):
-                # 좌석 간격 추정 (row당 약 20px)
                 row = i // 4
                 col = i % 4
                 sx = seat_area_left + (seat_area_right - seat_area_left) * (0.3 + col * 0.1)
@@ -584,9 +679,7 @@ class TruveMacro:
                 await self._delay()
 
         elif strategy in ("random_good", "browse_then_pick"):
-            # Level 5+: 랜덤/둘러보기 후 선택
             if strategy == "browse_then_pick" and self.level >= 8:
-                # 먼저 여러 영역 둘러보기
                 browse_count = random.randint(4, 8)
                 for _ in range(browse_count):
                     bx = random.uniform(seat_area_left, seat_area_right)
@@ -594,7 +687,6 @@ class TruveMacro:
                     await self.mouse.move_to(bx, by)
                     await asyncio.sleep(random.uniform(0.3, 1.0))
 
-            # 랜덤 위치 클릭
             for i in range(max_seats):
                 sx = random.uniform(seat_area_left, seat_area_right)
                 sy = random.uniform(seat_area_top, seat_area_bottom)
@@ -727,11 +819,18 @@ class TruveMacro:
             pass
         await self._delay()
 
-        # 결제수단 선택 (카드 결제)
+        # 결제수단 선택 (booking_options 반영)
+        pay_method = self.booking.get("pay_method", "CARD")
+        if pay_method == "CARD":
+            pay_label = "간편 결제"
+        else:  # VIRTUAL_ACCOUNT
+            pay_label = "무통장 입금"
+
+        print(f"      결제수단: {pay_label}")
         try:
             await self._click_selector(
-                'text=간편 결제',
-                "카드 결제 선택"
+                f'text={pay_label}',
+                f"{pay_label} 선택"
             )
         except Exception:
             pass
@@ -876,6 +975,11 @@ class TruveMacro:
         # [Rule 4] 크리덴셜 마스킹
         print(f"  계정: {mask_email(account['email'])}")
         print(f"  대상: {self.base_url}/shows/{show_id}")
+        bk = self.booking
+        print(f"  좌석: {bk['seat_grade'].upper()} / {bk['seat_section']} / {bk['seat_count']}매")
+        print(f"  결제: {bk['pay_method']}")
+        if bk.get("schedule_date"):
+            print(f"  날짜: {bk['schedule_date']} {bk.get('schedule_time', '(첫 회차)')}")
         print(f"{'='*60}")
 
         try:

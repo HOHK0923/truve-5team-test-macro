@@ -570,6 +570,85 @@ BE_FEATURES = [
     "session_count",
 ]
 
+# ============================================================
+# 예매 부가 설정 (공연/좌석/결제 상세 옵션)
+# ============================================================
+
+# 좌석 등급 (Truve 좌석 체계)
+VALID_SEAT_GRADES = {"VIP", "R", "S", "A", "any"}
+
+# 좌석 구역 (Truve 구역 체계)
+VALID_SEAT_SECTIONS = {
+    "OP",                           # 오케스트라 피트
+    "1F-A", "1F-B", "1F-C",         # 1층
+    "2F-A", "2F-B", "2F-C",         # 2층
+    "any",                          # 아무 구역
+}
+
+# 결제 방식
+VALID_PAY_METHODS = {"CARD", "VIRTUAL_ACCOUNT"}
+
+# 수령 방식
+VALID_RECEIPT_TYPES = {"NONE"}  # 현재 현장수령만 지원
+
+
+def build_booking_options(
+    seat_grade: str = "any",
+    seat_section: str = "any",
+    seat_count: int = 2,
+    pay_method: str = "CARD",
+    schedule_date: str = None,
+    schedule_time: str = None,
+) -> dict:
+    """
+    [Rule 1] 예매 부가 옵션 검증 및 생성.
+    CLI/환경변수에서 받은 값을 검증 후 딕셔너리로 반환.
+    """
+    # 좌석 등급 검증
+    seat_grade = seat_grade.upper()
+    if seat_grade != "ANY" and seat_grade not in VALID_SEAT_GRADES:
+        raise ValueError(
+            f"잘못된 좌석 등급: {seat_grade} (허용: {', '.join(sorted(VALID_SEAT_GRADES))})"
+        )
+
+    # 좌석 구역 검증
+    seat_section = seat_section.upper()
+    if seat_section != "ANY" and seat_section not in VALID_SEAT_SECTIONS:
+        raise ValueError(
+            f"잘못된 좌석 구역: {seat_section} (허용: {', '.join(sorted(VALID_SEAT_SECTIONS))})"
+        )
+
+    # 좌석 수 검증 (1~4석)
+    if not isinstance(seat_count, int) or seat_count < 1 or seat_count > 4:
+        raise ValueError(f"잘못된 좌석 수: {seat_count} (1~4)")
+
+    # 결제 방식 검증
+    pay_method = pay_method.upper()
+    if pay_method not in VALID_PAY_METHODS:
+        raise ValueError(
+            f"잘못된 결제 방식: {pay_method} (허용: {', '.join(VALID_PAY_METHODS)})"
+        )
+
+    # 날짜 형식 검증 (YYYY-MM-DD)
+    if schedule_date:
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", schedule_date):
+            raise ValueError(f"잘못된 날짜 형식: {schedule_date} (YYYY-MM-DD)")
+
+    # 시간 형식 검증 (HH:MM)
+    if schedule_time:
+        if not re.match(r"^\d{2}:\d{2}$", schedule_time):
+            raise ValueError(f"잘못된 시간 형식: {schedule_time} (HH:MM)")
+
+    return {
+        "seat_grade": seat_grade.lower(),
+        "seat_section": seat_section,
+        "seat_count": seat_count,
+        "pay_method": pay_method,
+        "schedule_date": schedule_date,   # None이면 첫 번째 가용 날짜
+        "schedule_time": schedule_time,   # None이면 첫 번째 가용 회차
+    }
+
+
 FE_FEATURES = [
     "webdriver_detected",
     "plugins_count",

@@ -30,7 +30,7 @@ import time
 from config import (
     BOT_LEVELS, BASE_URL, TEST_ACCOUNTS, LEVEL_COMPARISON,
     validate_url, validate_level, validate_runs, validate_show_id,
-    mask_email,
+    mask_email, build_booking_options,
 )
 from data_logger import DataLogger
 from browser_macro import TruveMacro, PLAYWRIGHT_AVAILABLE
@@ -111,7 +111,8 @@ def parse_level_arg(level_str: str) -> list[int]:
 
 async def run_macro(base_url: str, level: int, runs: int,
                     accounts: list, show_id: int, schedule_id: int,
-                    applicant: dict, data_logger: DataLogger):
+                    applicant: dict, booking_options: dict,
+                    data_logger: DataLogger):
     """단일 레벨로 매크로 실행"""
     cfg = BOT_LEVELS[level]
 
@@ -127,7 +128,8 @@ async def run_macro(base_url: str, level: int, runs: int,
         print(f"\n  --- Run {run_idx + 1}/{runs} (계정: {mask_email(account['email'])}) ---")
 
         try:
-            macro = TruveMacro(base_url, level, data_logger)
+            macro = TruveMacro(base_url, level, data_logger,
+                               booking_options=booking_options)
             be_record, fe_record = await macro.run(
                 account=account,
                 show_id=show_id,
@@ -180,6 +182,20 @@ async def async_main(args):
         "phone": args.applicant_phone,
     }
 
+    # [Rule 1] 예매 부가 옵션 검증
+    try:
+        booking_options = build_booking_options(
+            seat_grade=args.seat_grade,
+            seat_section=args.seat_section,
+            seat_count=args.seat_count,
+            pay_method=args.pay_method,
+            schedule_date=args.schedule_date,
+            schedule_time=args.schedule_time,
+        )
+    except ValueError as e:
+        print(f"  [INPUT ERROR] {e}")
+        sys.exit(1)
+
     total_start = time.time()
 
     for level in levels:
@@ -191,6 +207,7 @@ async def async_main(args):
             show_id=args.show_id,
             schedule_id=args.schedule_id,
             applicant=applicant,
+            booking_options=booking_options,
             data_logger=data_logger,
         )
 
@@ -234,6 +251,35 @@ def main():
     parser.add_argument("--output", default="./output", help="출력 디렉토리")
     parser.add_argument("--info", action="store_true", help="레벨 비교표 출력 후 종료")
 
+    # ── 예매 부가 설정 ──
+    booking_group = parser.add_argument_group("예매 부가 설정")
+    booking_group.add_argument(
+        "--seat-grade", default="any",
+        choices=["VIP", "R", "S", "A", "any"],
+        help="좌석 등급 (기본: any=아무거나)",
+    )
+    booking_group.add_argument(
+        "--seat-section", default="any",
+        help="좌석 구역 (OP, 1F-A, 1F-B, 1F-C, 2F-A, 2F-B, 2F-C, any)",
+    )
+    booking_group.add_argument(
+        "--seat-count", type=int, default=2,
+        help="예매 매수 1~4 (기본: 2)",
+    )
+    booking_group.add_argument(
+        "--pay-method", default="CARD",
+        choices=["CARD", "VIRTUAL_ACCOUNT"],
+        help="결제 방식 (CARD=카드, VIRTUAL_ACCOUNT=무통장)",
+    )
+    booking_group.add_argument(
+        "--schedule-date", default=None,
+        help="회차 날짜 YYYY-MM-DD (미지정시 첫 번째 가용)",
+    )
+    booking_group.add_argument(
+        "--schedule-time", default=None,
+        help="회차 시간 HH:MM (미지정시 첫 번째 가용)",
+    )
+
     args = parser.parse_args()
 
     print_banner()
@@ -262,6 +308,10 @@ def main():
     print(f"  레벨: {args.level}")
     print(f"  반복: {args.runs}회/레벨")
     print(f"  공연: showId={args.show_id}")
+    print(f"  좌석: {args.seat_grade.upper()} / {args.seat_section.upper()} / {args.seat_count}매")
+    print(f"  결제: {args.pay_method}")
+    if args.schedule_date:
+        print(f"  날짜: {args.schedule_date} {args.schedule_time or '(첫 회차)'}")
 
     # [Rule 2] 비밀번호 CLI 전달 시 경고
     if args.password:
