@@ -1309,23 +1309,44 @@ class TruveMacro:
         await self._delay()
 
         # ── 3. 현금영수증 선택 ──
+        # Toss SDK 현금영수증 옵션:
+        #   "소득공제" → 전화번호 입력 필요
+        #   "지출증빙" → 사업자번호 입력 필요
+        #   "미발행"/"신청안함" → 입력 없음, 바로 결제
         print(f"      현금영수증: {cash_receipt}")
-        await self._toss_click_text(toss, cash_receipt, f"현금영수증 {cash_receipt}")
-        await asyncio.sleep(0.8)
 
-        # ── 4. 소득공제 시 휴대폰번호 입력 ──
-        if cash_receipt == "소득공제":
-            print(f"      소득공제 전화번호: {phone}")
-            await self._toss_fill_input(toss, [
-                'input[type="tel"]',
-                'input[inputmode="tel"]',
-                'input[inputmode="numeric"]',
-                'input[name*="phone"]',
-                'input[placeholder*="010"]',
-                'input[placeholder*="휴대폰"]',
-                'input[placeholder*="전화"]',
-                'input[placeholder*="번호"]',
-            ], phone, "소득공제 전화번호")
+        if cash_receipt == "미발행":
+            # "미발행" 또는 "신청안함" 체크 → 입력 필요 없음
+            click_texts = ["미발행", "신청안함", "발행안함", "안 함"]
+            for txt in click_texts:
+                result = await self._toss_click_text(toss, txt, f"현금영수증 {txt}")
+                if result:
+                    break
+        else:
+            await self._toss_click_text(toss, cash_receipt, f"현금영수증 {cash_receipt}")
+            await asyncio.sleep(0.8)
+
+            # 소득공제 → 전화번호 입력
+            if cash_receipt == "소득공제":
+                print(f"      소득공제 전화번호: {phone}")
+                result = await self._toss_fill_input(toss, [
+                    'input[type="tel"]',
+                    'input[inputmode="tel"]',
+                    'input[inputmode="numeric"]',
+                    'input[name*="phone"]',
+                    'input[placeholder*="010"]',
+                    'input[placeholder*="휴대폰"]',
+                    'input[placeholder*="전화"]',
+                    'input[placeholder*="번호"]',
+                ], phone, "소득공제 전화번호")
+
+                if not result:
+                    # 전화번호 입력 실패 → 미발행으로 폴백
+                    print(f"      [!] 전화번호 입력 실패, 미발행으로 전환")
+                    for txt in ["미발행", "신청안함", "발행안함"]:
+                        if await self._toss_click_text(toss, txt, f"{txt} 전환"):
+                            break
+
         await self._delay()
 
         # ── 5. 결제하기 / 확인 버튼 ──
