@@ -263,15 +263,15 @@ python main.py \
    └ queue/enter → queue/status 폴링 → admissionToken 획득
 
 5. 세션 진입 → 좌석 선점/재시도 (/shows/{showId}/seat)
-   └ ticketing/enter (세션 토큰)
-   └ 좌석 배치도 조회 → 등급/구역 기반 좌석 클릭 (PixiJS Canvas)
-   └ ticketing/hold/seat (선점 실패 시 재시도)
+   └ DOM 기반 좌석 선택 (SVG circle 요소 JS 클릭)
+   └ 등급별 색상: VIP=보라, R=녹, S=파랑, A=노랑
+   └ 예매됨(회색) 자동 제외, available 좌석만 클릭
 
 6. Booking 생성 + 결제 페이지 이동 (/payments)
-   └ POST /bookings → "결제하기" 버튼
+   └ "결제하기" 버튼 → URL /payments 도달 확인
 
 7. Payment-ready + 예약자 정보 입력
-   ├ 이름/생년월일/이메일/전화번호 입력
+   ├ 이름/생년월일/이메일/전화번호 (JS nativeInputValueSetter 폴백)
    ├ 수령방법: 현장수령
    ├ 결제수단: 카드 또는 무통장 선택
    ├ 약관 동의 (Lv1~5: 전체 / Lv6~10: 개별)
