@@ -591,12 +591,30 @@ VALID_PAY_METHODS = {"CARD", "VIRTUAL_ACCOUNT"}
 # 수령 방식
 VALID_RECEIPT_TYPES = {"NONE"}  # 현재 현장수령만 지원
 
+# 은행 목록 (무통장 입금용)
+VALID_BANKS = {
+    "국민", "신한", "우리", "하나", "농협",
+    "기업", "SC제일", "카카오뱅크", "토스뱅크", "케이뱅크",
+}
+
+# 카드사 목록 (카드 결제용)
+VALID_CARD_COMPANIES = {
+    "삼성", "현대", "KB국민", "신한", "롯데",
+    "하나", "우리", "BC", "NH농협",
+}
+
+# 현금영수증 유형 (무통장 입금 시)
+VALID_CASH_RECEIPTS = {"소득공제", "지출증빙", "미발행"}
+
 
 def build_booking_options(
     seat_grade: str = "any",
     seat_section: str = "any",
     seat_count: int = 2,
     pay_method: str = "CARD",
+    bank: str = "국민",
+    card_company: str = "삼성",
+    cash_receipt: str = "소득공제",
     schedule_date: str = None,
     schedule_time: str = None,
 ) -> dict:
@@ -639,13 +657,34 @@ def build_booking_options(
         if not re.match(r"^\d{2}:\d{2}$", schedule_time):
             raise ValueError(f"잘못된 시간 형식: {schedule_time} (HH:MM)")
 
+    # 은행 검증 (무통장 입금 시)
+    if pay_method == "VIRTUAL_ACCOUNT" and bank not in VALID_BANKS:
+        raise ValueError(
+            f"잘못된 은행: {bank} (허용: {', '.join(sorted(VALID_BANKS))})"
+        )
+
+    # 카드사 검증 (카드 결제 시)
+    if pay_method == "CARD" and card_company not in VALID_CARD_COMPANIES:
+        raise ValueError(
+            f"잘못된 카드사: {card_company} (허용: {', '.join(sorted(VALID_CARD_COMPANIES))})"
+        )
+
+    # 현금영수증 검증
+    if cash_receipt not in VALID_CASH_RECEIPTS:
+        raise ValueError(
+            f"잘못된 현금영수증: {cash_receipt} (허용: {', '.join(VALID_CASH_RECEIPTS)})"
+        )
+
     return {
         "seat_grade": seat_grade.lower(),
         "seat_section": seat_section,
         "seat_count": seat_count,
         "pay_method": pay_method,
-        "schedule_date": schedule_date,   # None이면 첫 번째 가용 날짜
-        "schedule_time": schedule_time,   # None이면 첫 번째 가용 회차
+        "bank": bank,                     # 무통장 입금 은행
+        "card_company": card_company,     # 카드 결제 카드사
+        "cash_receipt": cash_receipt,     # 현금영수증 유형
+        "schedule_date": schedule_date,
+        "schedule_time": schedule_time,
     }
 
 

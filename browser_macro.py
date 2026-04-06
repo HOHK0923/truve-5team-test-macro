@@ -901,20 +901,264 @@ class TruveMacro:
         except Exception as e:
             print(f"      [!] 결제 버튼 클릭 실패: {type(e).__name__}")
 
-        # Toss Payments 모달 로딩 대기
-        # - CARD: Toss 카드/간편결제 통합 창
-        # - VIRTUAL_ACCOUNT: Toss 가상계좌 발급 창
-        #   → 은행 선택, 입금자명 입력은 Toss SDK 내부에서 처리
-        #   → 소득공제 = "소득공제" 자동 적용 (하드코딩)
-        #   → 유효시간: 24시간
+        # Toss Payments 모달/iframe 로딩 대기
         await asyncio.sleep(3)
 
-        if pay_method == "VIRTUAL_ACCOUNT":
-            print(f"      -> Toss 무통장 입금 창 (은행선택/입금자명/소득공제 = Toss 내부)")
-        else:
-            print(f"      -> Toss 카드/간편결제 창 열림")
+        # ── 7. Toss SDK 내부 조작 ──
+        await self._handle_toss_sdk(pay_method, applicant)
 
-        print(f"      -> 결제 요청 완료")
+    # ================================================================
+    # Toss Payments SDK 내부 조작
+    # ================================================================
+
+    async def _get_toss_frame(self):
+        """
+        Toss SDK는 iframe 또는 새 창(팝업)으로 열림.
+        두 가지 모두 시도하여 Toss 결제 화면에 접근한다.
+        """
+        # 방법 1: iframe으로 열린 경우
+        for frame in self.page.frames:
+            url = frame.url
+            if "tosspayments" in url or "toss" in url or "brandpay" in url:
+                print(f"      [Toss] iframe 감지: {url[:60]}...")
+                return frame
+
+        # 방법 2: 새 팝업 창으로 열린 경우
+        pages = self.context.pages
+        for p in pages:
+            if p != self.page and ("toss" in p.url or "tosspayments" in p.url):
+                print(f"      [Toss] 팝업 창 감지: {p.url[:60]}...")
+                return p
+
+        # 방법 3: 새 창이 열릴 때까지 잠시 대기
+        try:
+            new_page = await self.context.wait_for_event("page", timeout=5000)
+            if "toss" in new_page.url:
+                print(f"      [Toss] 새 창 감지: {new_page.url[:60]}...")
+                return new_page
+        except Exception:
+            pass
+
+        # 방법 4: 현재 페이지에서 Toss UI가 직접 렌더링된 경우
+        toss_el = await self.page.query_selector(
+            '[class*="toss"], [id*="toss"], [data-testid*="toss"]'
+        )
+        if toss_el:
+            print(f"      [Toss] 현재 페이지 내 Toss 엘리먼트 감지")
+            return self.page
+
+        return None
+
+    async def _handle_toss_sdk(self, pay_method: str, applicant: dict):
+        """
+        Toss Payments SDK 모달/iframe 내부 요소 조작
+
+        [카드 결제 (CARD)]
+          - 카드사 선택 또는 간편결제(토스페이/카카오페이 등) 선택
+          - 카드 정보 입력 (카드번호, 유효기간, CVC 등)
+
+        [무통장 입금 (VIRTUAL_ACCOUNT)]
+          - 입금할 은행 선택 (국민, 신한, 우리, 하나 등)
+          - 입금자명 입력
+          - 현금영수증: 소득공제 / 지출증빙 / 미발행 선택
+          - 소득공제 선택 시: 휴대폰번호 입력
+          - 결제하기 버튼 클릭
+        """
+        print(f"\n  [Step 8/8] Toss Payments 결제 처리")
+        self._be.api_call_sequence.append("toss_sdk")
+
+        toss = await self._get_toss_frame()
+        if not toss:
+            print(f"      [!] Toss SDK 화면을 찾을 수 없음 (iframe/팝업/직접 렌더링 없음)")
+            print(f"      [!] 결제 화면이 열리지 않았거나 리다이렉트 방식일 수 있음")
+            return
+
+        await asyncio.sleep(1)
+
+        if pay_method == "VIRTUAL_ACCOUNT":
+            await self._toss_virtual_account(toss, applicant)
+        else:
+            await self._toss_card(toss)
+
+    async def _toss_virtual_account(self, toss, applicant: dict):
+        """
+        Toss SDK - 무통장 입금 처리
+        1) 은행 선택
+        2) 입금자명 입력
+        3) 현금영수증 (소득공제/지출증빙/미발행)
+        4) 소득공제 시 휴대폰번호 입력
+        5) 결제하기 클릭
+        """
+        bank = self.booking.get("bank", "국민")
+        depositor = applicant.get("name", "테스트봇")
+        cash_receipt = self.booking.get("cash_receipt", "소득공제")
+        phone = applicant.get("phone", "01012345678")
+
+        print(f"      [무통장 입금]")
+
+        # ── 1. 은행 선택 ──
+        print(f"      은행 선택: {bank}")
+        await self._delay()
+        try:
+            # Toss SDK 은행 목록: 드롭다운 또는 버튼 리스트
+            # 셀렉트 박스 형태
+            bank_select = await toss.query_selector(
+                'select, [role="listbox"], [class*="bank"], [class*="select"]'
+            )
+            if bank_select:
+                tag = await bank_select.evaluate("el => el.tagName.toLowerCase()")
+                if tag == "select":
+                    await bank_select.select_option(label=bank)
+                else:
+                    await bank_select.click()
+                    await asyncio.sleep(0.5)
+                    bank_opt = await toss.query_selector(f'text={bank}')
+                    if bank_opt:
+                        await bank_opt.click()
+            else:
+                # 버튼/라디오 형태의 은행 선택
+                bank_btn = await toss.query_selector(f'text={bank}')
+                if bank_btn:
+                    box = await bank_btn.bounding_box()
+                    if box:
+                        await self.mouse.click_at(
+                            box["x"] + box["width"] / 2,
+                            box["y"] + box["height"] / 2,
+                        )
+                    else:
+                        await bank_btn.click()
+                else:
+                    # 최종 폴백: 텍스트 매칭
+                    await toss.click(f'text="{bank}"')
+            print(f"      -> 은행 선택 완료")
+        except Exception as e:
+            print(f"      [!] 은행 선택 실패: {type(e).__name__}")
+        await self._delay()
+
+        # ── 2. 입금자명 입력 ──
+        print(f"      입금자명: {depositor}")
+        try:
+            # 입금자명 입력 필드
+            depositor_selectors = [
+                'input[name*="depositor"]',
+                'input[name*="name"]',
+                'input[placeholder*="입금자"]',
+                'input[placeholder*="이름"]',
+                'input[placeholder*="성명"]',
+            ]
+            for sel in depositor_selectors:
+                field = await toss.query_selector(sel)
+                if field:
+                    await field.fill("")
+                    await field.type(depositor, delay=self.cfg["typing_delay_ms"][0])
+                    print(f"      -> 입금자명 입력 완료")
+                    break
+        except Exception as e:
+            print(f"      [!] 입금자명 입력 실패: {type(e).__name__}")
+        await self._delay()
+
+        # ── 3. 현금영수증 선택 ──
+        print(f"      현금영수증: {cash_receipt}")
+        try:
+            receipt_btn = await toss.query_selector(f'text={cash_receipt}')
+            if receipt_btn:
+                await receipt_btn.click()
+                print(f"      -> {cash_receipt} 선택 완료")
+
+                # 소득공제 선택 시 → 휴대폰번호 입력
+                if cash_receipt == "소득공제":
+                    await asyncio.sleep(0.5)
+                    phone_selectors = [
+                        'input[name*="phone"]',
+                        'input[type="tel"]',
+                        'input[placeholder*="휴대폰"]',
+                        'input[placeholder*="전화"]',
+                        'input[placeholder*="010"]',
+                        'input[inputmode="tel"]',
+                    ]
+                    for sel in phone_selectors:
+                        field = await toss.query_selector(sel)
+                        if field:
+                            await field.fill("")
+                            await field.type(phone, delay=self.cfg["typing_delay_ms"][0])
+                            print(f"      -> 소득공제 휴대폰번호 입력 완료")
+                            break
+            else:
+                print(f"      [!] 현금영수증 '{cash_receipt}' 옵션 못찾음")
+        except Exception as e:
+            print(f"      [!] 현금영수증 선택 실패: {type(e).__name__}")
+        await self._delay()
+
+        # ── 4. 결제하기 / 확인 버튼 클릭 ──
+        print(f"      [Toss] 최종 결제 버튼 클릭")
+        try:
+            pay_btns = [
+                'button:has-text("결제하기")',
+                'button:has-text("확인")',
+                'button:has-text("입금하기")',
+                'button[type="submit"]',
+            ]
+            for sel in pay_btns:
+                btn = await toss.query_selector(sel)
+                if btn:
+                    await btn.click()
+                    print(f"      -> Toss 결제 요청 완료")
+                    break
+        except Exception as e:
+            print(f"      [!] Toss 결제 버튼 실패: {type(e).__name__}")
+
+        await asyncio.sleep(3)
+        print(f"      -> 무통장 입금 처리 완료")
+
+    async def _toss_card(self, toss):
+        """
+        Toss SDK - 카드/간편결제 처리
+        카드사 선택 → 카드 정보는 테스트 환경에서 Toss가 처리
+        """
+        card_company = self.booking.get("card_company", "삼성")
+
+        print(f"      [카드 결제]")
+
+        # ── 카드사 선택 또는 간편결제 선택 ──
+        print(f"      카드사: {card_company}")
+        await self._delay()
+        try:
+            card_btn = await toss.query_selector(f'text={card_company}')
+            if card_btn:
+                await card_btn.click()
+                print(f"      -> {card_company} 선택 완료")
+            else:
+                # 첫 번째 카드사 선택
+                first = await toss.query_selector(
+                    '[class*="card"], [class*="bank"], button'
+                )
+                if first:
+                    await first.click()
+                    print(f"      -> 첫 번째 결제수단 선택")
+        except Exception as e:
+            print(f"      [!] 카드사 선택 실패: {type(e).__name__}")
+
+        await self._delay()
+
+        # ── 결제하기 버튼 ──
+        try:
+            pay_btns = [
+                'button:has-text("결제하기")',
+                'button:has-text("다음")',
+                'button:has-text("확인")',
+                'button[type="submit"]',
+            ]
+            for sel in pay_btns:
+                btn = await toss.query_selector(sel)
+                if btn:
+                    await btn.click()
+                    print(f"      -> Toss 카드 결제 요청 완료")
+                    break
+        except Exception as e:
+            print(f"      [!] Toss 결제 버튼 실패: {type(e).__name__}")
+
+        await asyncio.sleep(3)
+        print(f"      -> 카드 결제 처리 완료")
 
     async def _check_agreements_individually(self):
         """약관 3개 개별 체크 (사람처럼 하나씩)"""
@@ -1075,7 +1319,7 @@ class TruveMacro:
                     # Step 6: 결제 페이지 이동
                     await self.step6_to_payment()
 
-                    # Step 7: 예약자 정보 + 결제
+                    # Step 7: 예약자 정보 + 결제 (→ Toss SDK까지)
                     await self.step7_payment(applicant)
 
             # 텔레메트리 수집

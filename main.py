@@ -189,6 +189,9 @@ async def async_main(args):
             seat_section=args.seat_section,
             seat_count=args.seat_count,
             pay_method=args.pay_method,
+            bank=args.bank,
+            card_company=args.card_company,
+            cash_receipt=args.cash_receipt,
             schedule_date=args.schedule_date,
             schedule_time=args.schedule_time,
         )
@@ -272,6 +275,19 @@ def main():
         help="결제 방식 (CARD=카드, VIRTUAL_ACCOUNT=무통장)",
     )
     booking_group.add_argument(
+        "--bank", default="국민",
+        help="무통장 입금 은행 (국민,신한,우리,하나,농협,카카오뱅크 등)",
+    )
+    booking_group.add_argument(
+        "--card-company", default="삼성",
+        help="카드 결제 카드사 (삼성,현대,KB국민,신한 등)",
+    )
+    booking_group.add_argument(
+        "--cash-receipt", default="소득공제",
+        choices=["소득공제", "지출증빙", "미발행"],
+        help="현금영수증 유형 (무통장 입금 시)",
+    )
+    booking_group.add_argument(
         "--schedule-date", default=None,
         help="회차 날짜 YYYY-MM-DD (미지정시 첫 번째 가용)",
     )
@@ -309,7 +325,10 @@ def main():
     print(f"  반복: {args.runs}회/레벨")
     print(f"  공연: showId={args.show_id}")
     print(f"  좌석: {args.seat_grade.upper()} / {args.seat_section.upper()} / {args.seat_count}매")
-    print(f"  결제: {args.pay_method}")
+    if args.pay_method == "CARD":
+        print(f"  결제: 카드 ({args.card_company})")
+    else:
+        print(f"  결제: 무통장 ({args.bank}) / 현금영수증: {args.cash_receipt}")
     if args.schedule_date:
         print(f"  날짜: {args.schedule_date} {args.schedule_time or '(첫 회차)'}")
 
