@@ -1326,86 +1326,141 @@ class TruveMacro:
     async def _toss_virtual_account(self, toss, applicant: dict):
         """
         Toss SDK - 무통장 입금 처리
-        1) 은행 선택
-        2) 입금자명 입력
-        3) 현금영수증 (소득공제/지출증빙/미발행)
-        4) 소득공제 시 휴대폰번호 입력
-        5) 결제하기 클릭
+        내부 구조를 모르므로 폼 요소를 순서대로 전부 처리하는 방식.
+        select → input → radio/checkbox → button 순회.
         """
         bank = self.booking.get("bank", "국민")
         depositor = applicant.get("name", "테스트봇")
-        cash_receipt = self.booking.get("cash_receipt", "소득공제")
         phone = applicant.get("phone", "01012345678")
 
         print(f"      [무통장 입금]")
 
-        # ── 1. 은행 선택 ──
+        # ── 1. 모든 select 드롭다운 처리 (은행 선택 등) ──
         print(f"      은행 선택: {bank}")
         await self._delay()
-
-        # select 드롭다운 형태
         try:
-            bank_select = await toss.query_selector('select')
-            if bank_select:
-                await bank_select.select_option(label=bank)
-                print(f"      -> 은행 선택 완료 (select)")
-            else:
-                # 버튼/텍스트 형태
-                await self._toss_click_text(toss, bank, f"은행 {bank}")
-        except Exception as e:
-            # 폴백: 텍스트 매칭
+            selects = await toss.query_selector_all('select')
+            for sel in selects:
+                if await sel.is_visible():
+                    # 은행 이름으로 선택 시도
+                    try:
+                        await sel.select_option(label=bank)
+                        print(f"      -> 은행 선택 완료")
+                    except Exception:
+                        # 첫 번째 옵션이 아닌 아무거나 선택
+                        try:
+                            options = await sel.query_selector_all('option')
+                            if len(options) > 1:
+                                val = await options[1].get_attribute('value')
+                                await sel.select_option(value=val)
+                                print(f"      -> 은행 선택 완료 (첫 번째)")
+                        except Exception:
+                            pass
+        except Exception:
             await self._toss_click_text(toss, bank, f"은행 {bank}")
         await self._delay()
 
-        # ── 2. 입금자명 입력 ──
-        print(f"      입금자명: {depositor}")
-        await self._toss_fill_input(toss, [
-            'input[name*="depositor"]',
-            'input[name*="name"]',
-            'input[placeholder*="입금자"]',
-            'input[placeholder*="이름"]',
-            'input[placeholder*="성명"]',
-            'input:not([type="tel"]):not([type="email"]):not([inputmode="numeric"])',
-        ], depositor, "입금자명")
+        # ── 2. 모든 text input 처리 (입금자명, 전화번호 등) ──
+        try:
+            inputs = await toss.query_selector_all('input[type="text"], input[type="tel"], input:not([type])')
+            visible_inputs = []
+            for inp in inputs:
+                try:
+                    if await inp.is_visible():
+                        visible_inputs.append(inp)
+                except Exception:
+                    pass
+
+            # 보이는 input 순서대로: 첫 번째=입금자명, 두 번째=전화번호
+            for idx, inp in enumerate(visible_inputs):
+                inp_type = await inp.get_attribute('type') or ''
+                inp_mode = await inp.get_attribute('inputmode') or ''
+                placeholder = await inp.get_attribute('placeholder') or ''
+
+                if inp_type == 'tel' or inp_mode in ('tel', 'numeric') or '010' in placeholder or '번호' in placeholder:
+                    # 전화번호 필드
+                    print(f"      전화번호 입력: {phone}")
+                    await self._toss_type_into(toss, inp, phone, "전화번호")
+                else:
+                    # 입금자명 또는 기타 텍스트
+                    print(f"      입금자명 입력: {depositor}")
+                    await self._toss_type_into(toss, inp, depositor, "입금자명")
+        except Exception as e:
+            print(f"      [!] input 처리 실패: {type(e).__name__}")
         await self._delay()
 
-        # ── 3. 현금영수증: 무조건 미발행 (전화번호 입력 회피) ──
-        # 소득공제는 전화번호 입력이 필요한데 Toss iframe에서 안 먹힘
-        # → 미발행/신청안함 선택해서 바로 결제 진행
-        print(f"      현금영수증: 미발행 선택")
-        no_receipt_texts = ["미발행", "신청안함", "발행안함", "안 함", "미신청"]
-        receipt_clicked = False
+        # ── 3. 현금영수증: select 드롭다운이면 미발행 선택 ──
+        print(f"      현금영수증: 미발행 시도")
+        try:
+            # 두 번째 select가 현금영수증 유형일 수 있음
+            selects = await toss.query_selector_all('select')
+            for sel in selects:
+                if await sel.is_visible():
+                    try:
+                        # "미발행" 옵션 시도
+                        await sel.select_option(label="미발행")
+                        print(f"      -> 현금영수증 미발행 (select)")
+                        break
+                    except Exception:
+                        try:
+                            await sel.select_option(label="신청안함")
+                            print(f"      -> 현금영수증 신청안함 (select)")
+                            break
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # 라디오 버튼 형태일 수도 있음
+        no_receipt_texts = ["미발행", "신청안함", "발행안함", "안 함"]
         for txt in no_receipt_texts:
             result = await self._toss_click_text(toss, txt, f"현금영수증 {txt}")
             if result:
-                receipt_clicked = True
                 break
-
-        if not receipt_clicked:
-            # 체크박스/라디오 형태일 수 있음
-            try:
-                await toss.evaluate("""() => {
-                    // 현금영수증 관련 체크박스/라디오 찾기
-                    const inputs = document.querySelectorAll('input[type="radio"], input[type="checkbox"]');
-                    for (const inp of inputs) {
-                        const label = inp.closest('label') || inp.parentElement;
-                        const text = label ? label.textContent : '';
-                        if (text.includes('미발행') || text.includes('신청안함') || text.includes('안 함')) {
-                            inp.click();
-                            return;
-                        }
-                    }
-                    // 마지막 라디오 버튼이 보통 미발행
-                    const radios = document.querySelectorAll('input[type="radio"]');
-                    if (radios.length > 0) radios[radios.length - 1].click();
-                }""")
-                print(f"      -> 미발행 (라디오/체크박스)")
-            except Exception:
-                print(f"      [!] 현금영수증 선택 실패 (결제 진행 시도)")
-
         await self._delay()
 
-        # ── 5. 결제하기 / 확인 버튼 ──
+        # ── 4. 모든 체크박스 체크 (약관 동의 등) ──
+        print(f"      약관/동의 체크")
+        try:
+            checkboxes = await toss.query_selector_all('input[type="checkbox"]')
+            for cb in checkboxes:
+                try:
+                    if await cb.is_visible():
+                        checked = await cb.is_checked()
+                        if not checked:
+                            # 체크박스 자체 또는 부모 label 클릭
+                            label = await cb.evaluate("el => el.closest('label')")
+                            if label:
+                                box = await cb.bounding_box()
+                                if box:
+                                    await self.mouse.click_at(box["x"] + 10, box["y"] + 10)
+                                else:
+                                    await cb.click(force=True)
+                            else:
+                                await cb.click(force=True)
+                            await asyncio.sleep(0.2)
+                            print(f"      -> 체크박스 체크")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # label 클릭으로도 시도 (체크박스가 숨겨진 경우)
+        try:
+            await toss.evaluate("""() => {
+                const labels = document.querySelectorAll('label');
+                for (const label of labels) {
+                    const cb = label.querySelector('input[type="checkbox"]');
+                    if (cb && !cb.checked) {
+                        label.click();
+                    }
+                }
+            }""")
+        except Exception:
+            pass
+        await self._delay()
+
+        # ── 5. 결제하기 버튼 ──
         print(f"      [Toss] 최종 결제 버튼 클릭")
         btn_texts = ["결제하기", "확인", "입금하기", "동의하고 결제하기"]
         for txt in btn_texts:
@@ -1415,6 +1470,42 @@ class TruveMacro:
 
         await asyncio.sleep(3)
         print(f"      -> 무통장 입금 처리 완료")
+
+    async def _toss_type_into(self, toss, element, value: str, label: str):
+        """Toss iframe 내 input 요소에 값 입력 (여러 방법)"""
+        try:
+            await element.focus()
+            await asyncio.sleep(0.1)
+            await element.press("Control+A")
+            await element.press("Backspace")
+            await asyncio.sleep(0.1)
+
+            # 한 글자씩 press
+            for char in value:
+                await element.press(char)
+                await asyncio.sleep(0.02)
+
+            current = await element.input_value()
+            if current and len(current) >= len(value) - 1:
+                print(f"      -> {label} 입력 완료")
+                return
+
+            # fill 폴백
+            await element.fill(value)
+            print(f"      -> {label} 입력 완료 (fill)")
+        except Exception:
+            try:
+                await element.evaluate(f"""(el) => {{
+                    const s = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value'
+                    ).set;
+                    s.call(el, '{value}');
+                    el.dispatchEvent(new Event('input', {{bubbles:true}}));
+                    el.dispatchEvent(new Event('change', {{bubbles:true}}));
+                }}""")
+                print(f"      -> {label} 입력 완료 (JS)")
+            except Exception:
+                print(f"      [!] {label} 입력 실패")
 
     async def _toss_card(self, toss):
         """
