@@ -307,46 +307,54 @@ class TruveMacro:
         """
         dismissed = False
 
-        # 보호 대상: 캡차/VQA/대기열 모달은 절대 닫지 않음
-        # 닫아도 되는 것: 공연안내, 알림, 쿠키 동의 등 일반 팝업만
+        # ── 공연안내 팝업 닫기 (shadcn Dialog) ──
+        # 정확한 셀렉터: button[data-slot="dialog-close"]
+        # 단, 캡차/VQA/대기열 모달은 절대 닫지 않음
+
         try:
             result = await self.page.evaluate("""() => {
-                const modals = document.querySelectorAll(
-                    'dialog[open], [role="dialog"], [class*="modal"], [class*="Modal"]'
-                );
-                if (modals.length === 0) return 'none';
+                // data-slot="dialog-close" 버튼이 있는 모달 찾기
+                const closeBtns = document.querySelectorAll('button[data-slot="dialog-close"]');
+                if (closeBtns.length === 0) return 'none';
 
-                for (const modal of modals) {
+                for (const btn of closeBtns) {
+                    // 이 버튼이 속한 모달의 텍스트 확인
+                    const modal = btn.closest('[data-slot="dialog-content"], [role="dialog"]');
+                    if (!modal) continue;
+
                     const text = modal.textContent || '';
 
                     // 캡차/VQA/대기열/결제 모달이면 → 절대 닫지 않음
                     const protect = ['시작하기', '캡차', 'captcha', '대기열',
                                      '대기 중', '접속 중', 'WAITING', '결제하기',
-                                     '타일', 'tile'];
-                    const isProtected = protect.some(kw => text.includes(kw));
-                    if (isProtected) continue;  // 이 모달은 건드리지 않음
+                                     '타일', 'tile', '좌석'];
+                    if (protect.some(kw => text.includes(kw))) continue;
 
-                    // 일반 팝업 → 닫기 버튼 찾아서 클릭
-                    const closeBtn = modal.querySelector(
-                        'button[aria-label*="닫"], button[aria-label*="close"], button[aria-label*="Close"]'
-                    );
-                    if (closeBtn) { closeBtn.click(); return 'closed'; }
-
-                    const buttons = modal.querySelectorAll('button');
-                    for (const btn of buttons) {
-                        const txt = btn.textContent.trim();
-                        if (txt === '닫기' || txt === 'X' || txt === 'x' || txt === '×') {
-                            btn.click();
-                            return 'closed';
-                        }
-                    }
+                    // 공연안내 등 일반 팝업 → 닫기
+                    btn.click();
+                    return 'closed';
                 }
+
+                // data-slot이 없는 경우 aria-label="Close" 시도
+                const ariaClose = document.querySelectorAll('button[aria-label="Close"]');
+                for (const btn of ariaClose) {
+                    const modal = btn.closest('[role="dialog"]');
+                    if (!modal) continue;
+                    const text = modal.textContent || '';
+                    const protect = ['시작하기', '캡차', 'captcha', '대기열',
+                                     '대기 중', '접속 중', 'WAITING', '결제하기',
+                                     '타일', 'tile', '좌석'];
+                    if (protect.some(kw => text.includes(kw))) continue;
+                    btn.click();
+                    return 'closed';
+                }
+
                 return 'skip';
             }""")
 
             if result == "closed":
                 await asyncio.sleep(0.5)
-                print(f"      [팝업] 일반 팝업 닫기 완료")
+                print(f"      [팝업] 공연안내 닫기 완료")
                 return True
 
         except Exception:
@@ -615,9 +623,14 @@ class TruveMacro:
         print(f"\n  [Step 3/8] 예매하기 + 캡차")
         self._be.api_call_sequence.append("captcha")
 
-        # ── 공연안내 팝업만 닫기 (예매하기 전에) ──
+        # ── 공연안내 팝업 닫기 (예매하기 전에) ──
         # 캡차 모달이 아직 안 떴으므로 여기서만 dismiss 허용
-        await self._dismiss_popups()
+        # 공연안내가 확실히 닫힐 때까지 최대 3회 시도
+        for _try in range(3):
+            closed = await self._dismiss_popups()
+            if not closed:
+                break
+            await asyncio.sleep(0.5)
         await self._delay()
 
         # ── 예매하기 버튼 클릭 ──
